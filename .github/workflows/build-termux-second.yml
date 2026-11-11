@@ -37,8 +37,11 @@ jobs:
         working-directory: termux-packages
         run: |
           docker pull ghcr.io/termux/package-builder:latest
-          docker run -d \
+          docker run -d --init \
             --name termux-second-builder \
+            --cap-add CAP_SYS_ADMIN \
+            --cap-add SYS_PTRACE \
+            --device /dev/fuse \
             --security-opt seccomp=unconfined \
             --security-opt apparmor=unconfined \
             --shm-size=2g \
