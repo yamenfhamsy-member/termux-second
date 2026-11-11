@@ -1,3 +1,346 @@
+diff --git a/.github/workflows/attach_debug_apks_to_release.yml b/.github/workflows/attach_debug_apks_to_release.yml
+deleted file mode 100644
+index 0c6e3f7..0000000
+--- a/.github/workflows/attach_debug_apks_to_release.yml
++++ /dev/null
+@@ -1,84 +0,0 @@
+-name: Attach Debug APKs To Release
+-
+-on:
+-  release:
+-    types:
+-      - published
+-
+-jobs:
+-  attach-apks:
+-    runs-on: ubuntu-latest
+-    strategy:
+-      fail-fast: false
+-      matrix:
+-        package_variant: [ apt-android-7, apt-android-5 ]
+-    env:
+-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+-
+-    steps:
+-      - name: Clone repository
+-        uses: actions/checkout@v6
+-        with:
+-          ref: ${{ env.GITHUB_REF }}
+-
+-      - name: Build and attach APKs to release
+-        shell: bash {0}
+-        env:
+-          PACKAGE_VARIANT: ${{ matrix.package_variant }}
+-        run: |
+-          exit_on_error() {
+-              echo "$1"
+-              echo "Deleting '$RELEASE_VERSION_NAME' release and '$GITHUB_REF' tag"
+-              hub release delete "$RELEASE_VERSION_NAME"
+-              git push --delete origin "$GITHUB_REF"
+-              exit 1
+-          }
+-
+-          echo "Setting vars"
+-          RELEASE_VERSION_NAME="${GITHUB_REF/refs\/tags\//}"
+-          if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
+-           exit_on_error "The versionName '${RELEASE_VERSION_NAME/v/}' is not a valid version as per semantic version '2.0.0' spec in the format 'major.minor.patch(-prerelease)(+buildmetadata)'. https://semver.org/spec/v2.0.0.html."
+-          fi
+-
+-          APK_DIR_PATH="./app/build/outputs/apk/debug"
+-          APK_VERSION_TAG="$RELEASE_VERSION_NAME+${{ env.PACKAGE_VARIANT }}-github-debug"
+-          APK_BASENAME_PREFIX="termux-app_$APK_VERSION_TAG"
+-
+-          echo "Building APKs for 'APK_VERSION_TAG' release"
+-          export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG" # Used by app/build.gradle
+-          export TERMUX_PACKAGE_VARIANT="${{ env.PACKAGE_VARIANT }}" # Used by app/build.gradle
+-          if ! ./gradlew assembleDebug; then
+-            exit_on_error "Build failed for '$APK_VERSION_TAG' release."
+-          fi
+-
+-          echo "Validating APKs"
+-          for abi in universal arm64-v8a armeabi-v7a x86_64 x86; do
+-            if ! test -f "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_$abi.apk"; then
+-              files_found="$(ls "$APK_DIR_PATH")"
+-              exit_on_error "Failed to find built APK at '$APK_DIR_PATH/${APK_BASENAME_PREFIX}_$abi.apk'. Files found: "$'\n'"$files_found"
+-            fi
+-          done
+-
+-          echo "Generating sha25sums file"
+-          if ! (cd "$APK_DIR_PATH"; sha256sum \
+-            "${APK_BASENAME_PREFIX}_universal.apk" \
+-            "${APK_BASENAME_PREFIX}_arm64-v8a.apk" \
+-            "${APK_BASENAME_PREFIX}_armeabi-v7a.apk" \
+-            "${APK_BASENAME_PREFIX}_x86_64.apk" \
+-            "${APK_BASENAME_PREFIX}_x86.apk" \
+-            > "${APK_BASENAME_PREFIX}_sha256sums"); then
+-            exit_on_error "Generate sha25sums failed for '$APK_VERSION_TAG' release."
+-          fi
+-
+-          echo "Attaching APKs to github release"
+-          if ! hub release edit \
+-          -m "" \
+-          -a "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_universal.apk" \
+-          -a "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_arm64-v8a.apk" \
+-          -a "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_armeabi-v7a.apk" \
+-          -a "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_x86_64.apk" \
+-          -a "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_x86.apk" \
+-          -a "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_sha256sums" \
+-          "$RELEASE_VERSION_NAME"; then
+-            exit_on_error "Attach APKs to release failed for '$APK_VERSION_TAG' release."
+-          fi
+diff --git a/.github/workflows/debug_build.yml b/.github/workflows/debug_build.yml
+deleted file mode 100644
+index 1e1cedc..0000000
+--- a/.github/workflows/debug_build.yml
++++ /dev/null
+@@ -1,133 +0,0 @@
+-name: Build
+-
+-on:
+-  push:
+-    branches:
+-      - master
+-      - 'github-releases/**'
+-  pull_request:
+-    branches:
+-      - master
+-
+-jobs:
+-  build:
+-    runs-on: ubuntu-latest
+-    strategy:
+-      fail-fast: false
+-      matrix:
+-        package_variant: [ apt-android-7, apt-android-5 ]
+-
+-    steps:
+-      - name: Clone repository
+-        uses: actions/checkout@v6
+-
+-      - name: Setup java 17
+-        uses: actions/setup-java@v5
+-        with:
+-          distribution: 'temurin'
+-          java-version: '17'
+-
+-      - name: Build APKs
+-        shell: bash {0}
+-        env:
+-          PACKAGE_VARIANT: ${{ matrix.package_variant }}
+-        run: |
+-          exit_on_error() { echo "$1"; exit 1; }
+-
+-          echo "Setting vars"
+-
+-          if [ "$GITHUB_EVENT_NAME" == "pull_request" ]; then
+-              GITHUB_SHA="${{ github.event.pull_request.head.sha }}" # Do not use last merge commit set in GITHUB_SHA
+-          fi
+-
+-          # Set RELEASE_VERSION_NAME to "<CURRENT_VERSION_NAME>+<last_commit_hash>"
+-          CURRENT_VERSION_NAME_REGEX='\s+versionName "([^"]+)"$'
+-          CURRENT_VERSION_NAME="$(grep -m 1 -E "$CURRENT_VERSION_NAME_REGEX" ./app/build.gradle | sed -r "s/$CURRENT_VERSION_NAME_REGEX/\1/")"
+-          RELEASE_VERSION_NAME="v$CURRENT_VERSION_NAME+${GITHUB_SHA:0:7}" # The "+" is necessary so that versioning precedence is not affected
+-          if ! printf "%s" "${RELEASE_VERSION_NAME/v/}" | grep -qP '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$'; then
+-           exit_on_error "The versionName '${RELEASE_VERSION_NAME/v/}' is not a valid version as per semantic version '2.0.0' spec in the format 'major.minor.patch(-prerelease)(+buildmetadata)'. https://semver.org/spec/v2.0.0.html."
+-          fi
+-
+-          APK_DIR_PATH="./app/build/outputs/apk/debug"
+-          APK_VERSION_TAG="$RELEASE_VERSION_NAME-${{ env.PACKAGE_VARIANT }}-github-debug" # Note the "-", GITHUB_SHA will already have "+" before it
+-          APK_BASENAME_PREFIX="termux-app_$APK_VERSION_TAG"
+-
+-          # Used by attachment steps later
+-          echo "APK_DIR_PATH=$APK_DIR_PATH" >> $GITHUB_ENV
+-          echo "APK_VERSION_TAG=$APK_VERSION_TAG" >> $GITHUB_ENV
+-          echo "APK_BASENAME_PREFIX=$APK_BASENAME_PREFIX" >> $GITHUB_ENV
+-
+-          echo "Building APKs for 'APK_VERSION_TAG' build"
+-          export TERMUX_APP_VERSION_NAME="${RELEASE_VERSION_NAME/v/}" # Used by app/build.gradle
+-          export TERMUX_APK_VERSION_TAG="$APK_VERSION_TAG" # Used by app/build.gradle
+-          export TERMUX_PACKAGE_VARIANT="${{ env.PACKAGE_VARIANT }}" # Used by app/build.gradle
+-          if ! ./gradlew assembleDebug; then
+-            exit_on_error "Build failed for '$APK_VERSION_TAG' build."
+-          fi
+-
+-          echo "Validating APKs"
+-          for abi in universal arm64-v8a armeabi-v7a x86_64 x86; do
+-            if ! test -f "$APK_DIR_PATH/${APK_BASENAME_PREFIX}_$abi.apk"; then
+-              files_found="$(ls "$APK_DIR_PATH")"
+-              exit_on_error "Failed to find built APK at '$APK_DIR_PATH/${APK_BASENAME_PREFIX}_$abi.apk'. Files found: "$'\n'"$files_found"
+-            fi
+-          done
+-
+-          echo "Generating sha25sums file"
+-          if ! (cd "$APK_DIR_PATH"; sha256sum \
+-            "${APK_BASENAME_PREFIX}_universal.apk" \
+-            "${APK_BASENAME_PREFIX}_arm64-v8a.apk" \
+-            "${APK_BASENAME_PREFIX}_armeabi-v7a.apk" \
+-            "${APK_BASENAME_PREFIX}_x86_64.apk" \
+-            "${APK_BASENAME_PREFIX}_x86.apk" \
+-            > "${APK_BASENAME_PREFIX}_sha256sums"); then
+-            exit_on_error "Generate sha25sums failed for '$APK_VERSION_TAG' release."
+-          fi
+-
+-      - name: Attach universal APK file
+-        uses: actions/upload-artifact@v6
+-        with:
+-          name: ${{ env.APK_BASENAME_PREFIX }}_universal
+-          path: |
+-            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_universal.apk
+-            ${{ env.APK_DIR_PATH }}/output-metadata.json
+-
+-      - name: Attach arm64-v8a APK file
+-        uses: actions/upload-artifact@v6
+-        with:
+-          name: ${{ env.APK_BASENAME_PREFIX }}_arm64-v8a
+-          path: |
+-            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_arm64-v8a.apk
+-            ${{ env.APK_DIR_PATH }}/output-metadata.json
+-
+-      - name: Attach armeabi-v7a APK file
+-        uses: actions/upload-artifact@v6
+-        with:
+-          name: ${{ env.APK_BASENAME_PREFIX }}_armeabi-v7a
+-          path: |
+-            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_armeabi-v7a.apk
+-            ${{ env.APK_DIR_PATH }}/output-metadata.json
+-
+-      - name: Attach x86_64 APK file
+-        uses: actions/upload-artifact@v6
+-        with:
+-          name: ${{ env.APK_BASENAME_PREFIX }}_x86_64
+-          path: |
+-            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_x86_64.apk
+-            ${{ env.APK_DIR_PATH }}/output-metadata.json
+-
+-      - name: Attach x86 APK file
+-        uses: actions/upload-artifact@v6
+-        with:
+-          name: ${{ env.APK_BASENAME_PREFIX }}_x86
+-          path: |
+-            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_x86.apk
+-            ${{ env.APK_DIR_PATH }}/output-metadata.json
+-
+-      - name: Attach sha256sums file
+-        uses: actions/upload-artifact@v6
+-        with:
+-          name: ${{ env.APK_BASENAME_PREFIX }}_sha256sums
+-          path: |
+-            ${{ env.APK_DIR_PATH }}/${{ env.APK_BASENAME_PREFIX }}_sha256sums
+-            ${{ env.APK_DIR_PATH }}/output-metadata.json
+diff --git a/.github/workflows/dependency-submission.yml b/.github/workflows/dependency-submission.yml
+deleted file mode 100644
+index 85f46b3..0000000
+--- a/.github/workflows/dependency-submission.yml
++++ /dev/null
+@@ -1,23 +0,0 @@
+-name: Automatic Dependency Submission
+-
+-on:
+-  push:
+-    branches: [ 'master' ]
+-  workflow_dispatch:
+-
+-permissions:
+-  contents: write
+-
+-jobs:
+-  dependency-submission:
+-    runs-on: ubuntu-latest
+-    steps:
+-    - name: Checkout sources
+-      uses: actions/checkout@v6
+-    - name: Setup Java
+-      uses: actions/setup-java@v5
+-      with:
+-        distribution: 'temurin'
+-        java-version: 17
+-    - name: Generate and submit dependency graph
+-      uses: gradle/actions/dependency-submission@v6
+diff --git a/.github/workflows/gradle-wrapper-validation.yml b/.github/workflows/gradle-wrapper-validation.yml
+deleted file mode 100644
+index 62ea7fe..0000000
+--- a/.github/workflows/gradle-wrapper-validation.yml
++++ /dev/null
+@@ -1,20 +0,0 @@
+-name: "Validate Gradle Wrapper"
+-
+-on:
+-  push:
+-    branches:
+-      - master
+-      - android-10
+-  pull_request:
+-    branches:
+-      - master
+-      - android-10
+-  workflow_dispatch:
+-
+-jobs:
+-  validation:
+-    name: "Validation"
+-    runs-on: ubuntu-latest
+-    steps:
+-      - uses: actions/checkout@v6
+-      - uses: gradle/actions/wrapper-validation@v6
+diff --git a/.github/workflows/run_tests.yml b/.github/workflows/run_tests.yml
+deleted file mode 100644
+index 69de025..0000000
+--- a/.github/workflows/run_tests.yml
++++ /dev/null
+@@ -1,26 +0,0 @@
+-name: Unit tests
+-
+-on:
+-  push:
+-    branches:
+-      - master
+-      - android-10
+-  pull_request:
+-    branches:
+-      - master
+-      - android-10
+-
+-jobs:
+-  testing:
+-    runs-on: ubuntu-latest
+-    steps:
+-    - name: Clone repository
+-      uses: actions/checkout@v6
+-    - name: Setup java 17
+-      uses: actions/setup-java@v5
+-      with:
+-        distribution: 'temurin'
+-        java-version: '17'
+-    - name: Execute tests
+-      run: |
+-        ./gradlew test
+diff --git a/.github/workflows/trigger_library_builds_on_jitpack.yml b/.github/workflows/trigger_library_builds_on_jitpack.yml
+deleted file mode 100644
+index fd00f13..0000000
+--- a/.github/workflows/trigger_library_builds_on_jitpack.yml
++++ /dev/null
+@@ -1,21 +0,0 @@
+-name: Trigger Termux Library Builds on Jitpack
+-
+-on:
+-  release:
+-    types:
+-      - published
+-
+-jobs:
+-  trigger-termux-library-builds:
+-    runs-on: ubuntu-latest
+-    steps:
+-      - name: Set vars
+-        run: echo "TERMUX_LIB_VERSION=${GITHUB_REF/refs\/tags\/v/}" >> $GITHUB_ENV # Do not include "v" prefix
+-      - name: Echo release
+-        run: echo "Triggering termux library builds on jitpack for '$TERMUX_LIB_VERSION' release after waiting for 3 mins"
+-      - name: Trigger termux library builds on jitpack
+-        run: |
+-          sleep 180 # It will take some time for the new tag to be detected by Jitpack
+-          curl --max-time 600 --no-progress-meter "https://jitpack.io/com/termux/termux-app/terminal-emulator/$TERMUX_LIB_VERSION/terminal-emulator-$TERMUX_LIB_VERSION.pom"
+-          curl --max-time 600 --no-progress-meter "https://jitpack.io/com/termux/termux-app/terminal-view/$TERMUX_LIB_VERSION/terminal-view-$TERMUX_LIB_VERSION.pom"
+-          curl --max-time 600 --no-progress-meter "https://jitpack.io/com/termux/termux-app/termux-shared/$TERMUX_LIB_VERSION/termux-shared-$TERMUX_LIB_VERSION.pom"
 diff --git a/app/build.gradle b/app/build.gradle
 index 33c88d1..51cf663 100644
 --- a/app/build.gradle
@@ -301,8 +644,53 @@ index dcd8d34..b145ad5 100644
      </shortcut>
 diff --git a/app/testkey_untrusted.jks b/app/testkey_untrusted.jks
 deleted file mode 100644
-index 174cc95..0000000
-Binary files a/app/testkey_untrusted.jks and /dev/null differ
+index 174cc95acd605bf557f9e63983f55fadc5ae44bd..0000000000000000000000000000000000000000
+GIT binary patch
+literal 0
+HcmV?d00001
+
+literal 2097
+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
+
 diff --git a/terminal-emulator/build.gradle b/terminal-emulator/build.gradle
 index ff1ebae..31f74fb 100644
 --- a/terminal-emulator/build.gradle

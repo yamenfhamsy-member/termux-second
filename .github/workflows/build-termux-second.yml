@@ -1,28 +1,23 @@
-name: Build Termux Second (Custom Bootstraps + APKs)
+name: Build Termux Second (arm64-v8a Bootstrap + APKs)
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build-bootstraps:
-    name: Bootstrap (${{ matrix.arch }})
+  build-arm64:
+    name: Build & Verify Termux Second (arm64-v8a)
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [aarch64]
+    timeout-minutes: 120
 
     steps:
-      - name: Reclaim unused runner disk space
+      - name: Reclaim unused runner disk space (preserve Android SDK)
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
           df -h /
 
       - name: Checkout fork repository
@@ -42,14 +37,13 @@ jobs:
         working-directory: termux-packages
         run: |
           docker pull ghcr.io/termux/package-builder:latest
-          docker run -d --init \
+          docker run -d \
             --name termux-second-builder \
-            --cap-add CAP_SYS_ADMIN \
-            --cap-add SYS_PTRACE \
-            --device /dev/fuse \
             --security-opt seccomp=unconfined \
             --security-opt apparmor=unconfined \
+            --shm-size=2g \
             -v "$PWD:/home/builder/termux-packages" \
+            -w /home/builder/termux-packages \
             ghcr.io/termux/package-builder:latest \
             sleep infinity
 
@@ -68,27 +62,50 @@ jobs:
             sysctl -w kernel.pid_max=65535 || echo 65535 > /proc/sys/kernel/pid_max || true
           '
 
-      - name: Compile custom bootstrap from source (${{ matrix.arch }})
-        working-directory: termux-packages
-        run: |
-          docker exec -e CI=true -u builder -w /home/builder/termux-packages termux-second-builder \
-            bash -o pipefail -c "./scripts/build-bootstraps.sh --architectures ${{ matrix.arch }} 2>&1 | tee output/bootstrap-${{ matrix.arch }}-build.log"
-
-      - name: Audit custom bootstrap prefix & ELF isolation (${{ matrix.arch }})
+      - name: Compile custom bootstrap from source (aarch64)
         working-directory: termux-packages
         run: |
           set -euo pipefail
-          ZIP_PATH="output/bootstrap-${{ matrix.arch }}.zip"
-          AUDIT_REPORT="output/bootstrap-${{ matrix.arch }}-audit.txt"
+          : > output/bootstrap-aarch64-build.log
+
+          # Stream concise milestone lines on host runner without holding container stdio open
+          (
+            tail -n +1 -f output/bootstrap-aarch64-build.log | \
+              grep --line-buffered -E "termux - build of|\[\*\] (Building|Extracting|Creating|Finished)|built - skipping|ERROR:" || true
+          ) &
+          TAIL_PID=$!
+          trap 'kill "$TAIL_PID" 2>/dev/null || true' EXIT
+
+          # Redirect container stdio directly to regular file so background gpg-agent never blocks docker exec exit
+          docker exec -e CI=true -u builder -w /home/builder/termux-packages termux-second-builder \
+            bash -c '
+              exec </dev/null >output/bootstrap-aarch64-build.log 2>&1
+              ./scripts/build-bootstraps.sh --architectures aarch64
+              rc=$?
+              gpgconf --kill all >/dev/null 2>&1 || pkill -u builder gpg-agent >/dev/null 2>&1 || true
+              exit $rc
+            '
+
+          sleep 2
+          kill "$TAIL_PID" 2>/dev/null || true
+          docker rm -f termux-second-builder >/dev/null 2>&1 || true
+          ls -lh output/bootstrap-aarch64.zip
+
+      - name: Audit custom bootstrap prefix & ELF isolation (aarch64)
+        working-directory: termux-packages
+        run: |
+          set -euo pipefail
+          ZIP_PATH="output/bootstrap-aarch64.zip"
+          AUDIT_REPORT="output/bootstrap-aarch64-audit.txt"
           test -f "$ZIP_PATH"
 
-          AUDIT_DIR="/tmp/audit-${{ matrix.arch }}"
+          AUDIT_DIR="/tmp/audit-aarch64"
           rm -rf "$AUDIT_DIR"
           mkdir -p "$AUDIT_DIR"
           unzip -q "$ZIP_PATH" -d "$AUDIT_DIR"
 
           {
-            echo "=== Termux Second Custom Bootstrap Audit (${{ matrix.arch }}) ==="
+            echo "=== Termux Second Custom Bootstrap Audit (aarch64) ==="
             echo "Archive: $ZIP_PATH"
             echo "Size: $(stat -c%s "$ZIP_PATH") bytes"
             echo "SHA256: $(sha256sum "$ZIP_PATH" | awk '{print $1}')"
@@ -140,10 +157,16 @@ jobs:
               cat /tmp/contamination.txt
               exit 1
             fi
+
             SCRIPT_DIRS=("$AUDIT_DIR/bin")
             [ -d "$AUDIT_DIR/libexec" ] && SCRIPT_DIRS+=("$AUDIT_DIR/libexec")
             while IFS= read -r -d '' sfile; do
               if ! head -c 4 "$sfile" 2>/dev/null | grep -qa $'\x7fELF'; then
+                if head -n 1 "$sfile" 2>/dev/null | grep -aq "^#!.*com\.termux"; then
+                  echo "[FAIL] Contaminated shebang in $sfile:"
+                  head -n 1 "$sfile"
+                  exit 1
+                fi
                 if grep -av '^[[:space:]]*#' "$sfile" 2>/dev/null | grep -aq "/data/data/com.termux"; then
                   echo "[FAIL] Active /data/data/com.termux reference in script $sfile:"
                   grep -an "/data/data/com.termux" "$sfile"
@@ -151,7 +174,7 @@ jobs:
                 fi
               fi
             done < <(find "${SCRIPT_DIRS[@]}" -type f -print0)
-            echo "[PASS] Zero active references to /data/data/com.termux across all ELF binaries, shared libs, scripts, configs, dpkg DB, and SYMLINKS.txt"
+            echo "[PASS] Zero active references to /data/data/com.termux across all ELF binaries, shared libs, shebangs, scripts, configs, dpkg DB, and SYMLINKS.txt"
 
             echo ""
             echo "--- Positive Custom Prefix Scan (/data/data/com.yamen.termux.second/files/usr) ---"
@@ -159,57 +182,24 @@ jobs:
             echo "[PASS] Custom prefix verified across $MATCH_COUNT text/config/script files + ELF binaries"
           } | tee "$AUDIT_REPORT"
 
-      - name: Upload custom bootstrap (${{ matrix.arch }})
-        uses: actions/upload-artifact@v4
-        with:
-          name: bootstrap-${{ matrix.arch }}
-          path: |
-            termux-packages/output/bootstrap-${{ matrix.arch }}.zip
-            termux-packages/output/bootstrap-${{ matrix.arch }}-audit.txt
-            termux-packages/output/bootstrap-${{ matrix.arch }}-build.log
-
-  build-apks:
-    name: Build & Verify Termux Second APKs
-    needs: build-bootstraps
-    runs-on: ubuntu-24.04
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout fork repository
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
+      - name: Set up JDK 17 for Android build
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Download all custom bootstrap archives
-        uses: actions/download-artifact@v4
-        with:
-          pattern: bootstrap-*
-          path: downloaded-bootstraps
-          merge-multiple: true
-
-      - name: Stage custom bootstraps into termux-app native directory
+      - name: Stage custom arm64 bootstrap & build signed Debug + Release APKs
         run: |
+          set -euo pipefail
           mkdir -p termux-app/app/src/main/cpp
-          cp -v "downloaded-bootstraps/bootstrap-aarch64.zip" "termux-app/app/src/main/cpp/bootstrap-aarch64.zip"
-          ls -lh termux-app/app/src/main/cpp/bootstrap-*.zip
+          cp -v termux-packages/output/bootstrap-aarch64.zip termux-app/app/src/main/cpp/bootstrap-aarch64.zip
 
-      - name: Accept Android SDK licenses
-        run: |
           SDKMGR="$(find "$ANDROID_HOME" -name sdkmanager -type f | head -n 1)"
           yes | "$SDKMGR" --sdk_root="$ANDROID_HOME" --licenses > /dev/null
 
-      - name: Build Debug & Release APKs with isolated ephemeral signing key
-        working-directory: termux-app
-        run: |
-          set -euo pipefail
           EPHEMERAL_KS="/tmp/termux-second-ephemeral-$(openssl rand -hex 8).jks"
           EPHEMERAL_PASS="$(openssl rand -hex 20)"
           EPHEMERAL_ALIAS="termux_second_ephemeral"
-
           trap 'rm -f "$EPHEMERAL_KS"' EXIT
 
           keytool -genkeypair -v \
@@ -229,9 +219,9 @@ jobs:
           export TERMUX_SPLIT_APKS_FOR_RELEASE_BUILDS="1"
           export TERMUX_PACKAGE_VARIANT="apt-android-7"
 
+          cd termux-app
           chmod +x ./gradlew
           ./gradlew --no-daemon assembleDebug assembleRelease
-
           rm -f "$EPHEMERAL_KS"
 
       - name: Collect artifacts & run APK coexistence / manifest / signature verification
@@ -242,9 +232,9 @@ jobs:
 
           cp -v termux-app/app/build/outputs/apk/debug/*.apk "$OUT/apks/debug/"
           cp -v termux-app/app/build/outputs/apk/release/*.apk "$OUT/apks/release/"
-          cp -v downloaded-bootstraps/bootstrap-*.zip "$OUT/bootstraps/"
-          cp -v downloaded-bootstraps/bootstrap-*-audit.txt "$OUT/logs/"
-          cp -v downloaded-bootstraps/bootstrap-*-build.log "$OUT/logs/" || true
+          cp -v termux-packages/output/bootstrap-aarch64.zip "$OUT/bootstraps/"
+          cp -v termux-packages/output/bootstrap-aarch64-audit.txt "$OUT/logs/"
+          cp -v termux-packages/output/bootstrap-aarch64-build.log "$OUT/logs/"
 
           AAPT2="$(find "$ANDROID_HOME/build-tools" -name aapt2 -type f | sort -V | tail -n 1)"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
@@ -283,6 +273,15 @@ jobs:
 
           (cd "$OUT" && find apks bootstraps logs apk-verification-report.txt -type f -exec sha256sum {} + | sort -k2 > SHA256SUMS.txt)
           cat "$OUT/SHA256SUMS.txt"
+
+      - name: Upload build logs on any outcome
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: termux-second-logs
+          path: |
+            termux-packages/output/bootstrap-aarch64-build.log
+            termux-packages/output/bootstrap-aarch64-audit.txt
 
       - name: Upload complete Termux Second build deliverables
         uses: actions/upload-artifact@v4
