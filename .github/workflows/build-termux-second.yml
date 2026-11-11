@@ -4,9 +4,16 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      bootstrap_run_id:
+        description: "Optional prior Actions run ID from which to reuse compiled bootstrap-aarch64 artifact"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   build-arm64:
@@ -16,6 +23,7 @@ jobs:
 
     steps:
       - name: Reclaim unused runner disk space (preserve Android SDK)
+        if: ${{ inputs.bootstrap_run_id == '' }}
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
           df -h /
@@ -23,7 +31,26 @@ jobs:
       - name: Checkout fork repository
         uses: actions/checkout@v4
 
+      - name: Download pre-compiled custom bootstrap from prior run
+        if: ${{ inputs.bootstrap_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: bootstrap-aarch64
+          run-id: ${{ inputs.bootstrap_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: termux-packages/output
+
+      - name: Download prior bootstrap build log
+        if: ${{ inputs.bootstrap_run_id != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: termux-second-logs
+          run-id: ${{ inputs.bootstrap_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: termux-packages/output
+
       - name: Prepare termux-packages at pinned upstream commit + apply fork patch
+        if: ${{ inputs.bootstrap_run_id == '' }}
         run: |
           git init termux-packages
           cd termux-packages
@@ -34,6 +61,7 @@ jobs:
           mkdir -p output
 
       - name: Start isolated Termux package-builder container
+        if: ${{ inputs.bootstrap_run_id == '' }}
         working-directory: termux-packages
         run: |
           docker pull ghcr.io/termux/package-builder:latest
@@ -66,12 +94,12 @@ jobs:
           '
 
       - name: Compile custom bootstrap from source (aarch64)
+        if: ${{ inputs.bootstrap_run_id == '' }}
         working-directory: termux-packages
         run: |
           set -euo pipefail
           : > output/bootstrap-aarch64-build.log
 
-          # Stream concise milestone lines on host runner without holding container stdio open
           (
             tail -n +1 -f output/bootstrap-aarch64-build.log | \
               grep --line-buffered -E "termux - build of|\[\*\] (Building|Extracting|Creating|Finished)|built - skipping|ERROR:" || true
@@ -79,7 +107,6 @@ jobs:
           TAIL_PID=$!
           trap 'kill "$TAIL_PID" 2>/dev/null || true' EXIT
 
-          # Redirect container stdio directly to regular file so background gpg-agent never blocks docker exec exit
           docker exec -e CI=true -u builder -w /home/builder/termux-packages termux-second-builder \
             bash -c '
               exec </dev/null >output/bootstrap-aarch64-build.log 2>&1
@@ -95,6 +122,7 @@ jobs:
           ls -lh output/bootstrap-aarch64.zip
 
       - name: Upload compiled custom bootstrap immediately (aarch64)
+        if: ${{ inputs.bootstrap_run_id == '' }}
         uses: actions/upload-artifact@v4
         with:
           name: bootstrap-aarch64
@@ -203,8 +231,10 @@ jobs:
           mkdir -p termux-app/app/src/main/cpp
           cp -v termux-packages/output/bootstrap-aarch64.zip termux-app/app/src/main/cpp/bootstrap-aarch64.zip
 
-          SDKMGR="$(find "$ANDROID_HOME" -name sdkmanager -type f | head -n 1)"
-          yes | "$SDKMGR" --sdk_root="$ANDROID_HOME" --licenses > /dev/null
+          SDKMGR="$(find "$ANDROID_HOME" -name sdkmanager -type f | sed -n '1p')"
+          if [ -n "$SDKMGR" ]; then
+            (set +o pipefail; yes | "$SDKMGR" --sdk_root="$ANDROID_HOME" --licenses > /dev/null) || true
+          fi
 
           EPHEMERAL_KS="/tmp/termux-second-ephemeral-$(openssl rand -hex 8).jks"
           EPHEMERAL_PASS="$(openssl rand -hex 20)"
@@ -243,7 +273,7 @@ jobs:
           cp -v termux-app/app/build/outputs/apk/release/*.apk "$OUT/apks/release/"
           cp -v termux-packages/output/bootstrap-aarch64.zip "$OUT/bootstraps/"
           cp -v termux-packages/output/bootstrap-aarch64-audit.txt "$OUT/logs/"
-          cp -v termux-packages/output/bootstrap-aarch64-build.log "$OUT/logs/"
+          cp -v termux-packages/output/bootstrap-aarch64-build.log "$OUT/logs/" || true
 
           AAPT2="$(find "$ANDROID_HOME/build-tools" -name aapt2 -type f | sort -V | tail -n 1)"
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
@@ -273,10 +303,10 @@ jobs:
               fi
 
               echo "--- Authorities & Permissions ---"
-              echo "$XMLTREE" | grep -E "com\.yamen\.termux\.second" | head -n 20
+              echo "$XMLTREE" | grep -E "com\.yamen\.termux\.second" | sed -n '1,25p'
 
               echo "--- APK Signature Verification ---"
-              "$APKSIGNER" verify --verbose --print-certs "$apk" | head -n 15
+              "$APKSIGNER" verify --verbose --print-certs "$apk" | sed -n '1,20p'
             done
           } | tee "$OUT/apk-verification-report.txt"
 
