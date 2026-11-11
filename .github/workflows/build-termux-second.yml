@@ -107,7 +107,7 @@ jobs:
             echo "--- ELF DT_RUNPATH & Binary Strings Verification ---"
             ELF_COUNT=0
             while IFS= read -r -d '' f; do
-              if [ "$(head -c 4 "$f" 2>/dev/null | wc -c)" -eq 4 ] && head -c 4 "$f" | grep -q $'\x7fELF'; then
+              if [ "$(head -c 4 "$f" 2>/dev/null | wc -c)" -eq 4 ] && head -c 4 "$f" | grep -qa $'\x7fELF'; then
                 ELF_COUNT=$((ELF_COUNT + 1))
                 if readelf -d "$f" 2>/dev/null | grep -E 'RUNPATH|RPATH' | grep -q "/data/data/com.termux"; then
                   echo "[FAIL] Original prefix in DT_RUNPATH of $f"
@@ -140,15 +140,17 @@ jobs:
               cat /tmp/contamination.txt
               exit 1
             fi
+            SCRIPT_DIRS=("$AUDIT_DIR/bin")
+            [ -d "$AUDIT_DIR/libexec" ] && SCRIPT_DIRS+=("$AUDIT_DIR/libexec")
             while IFS= read -r -d '' sfile; do
-              if ! head -c 4 "$sfile" 2>/dev/null | grep -q $'\x7fELF'; then
-                if grep -v '^[[:space:]]*#' "$sfile" 2>/dev/null | grep -q "/data/data/com.termux"; then
+              if ! head -c 4 "$sfile" 2>/dev/null | grep -qa $'\x7fELF'; then
+                if grep -av '^[[:space:]]*#' "$sfile" 2>/dev/null | grep -aq "/data/data/com.termux"; then
                   echo "[FAIL] Active /data/data/com.termux reference in script $sfile:"
-                  grep -n "/data/data/com.termux" "$sfile"
+                  grep -an "/data/data/com.termux" "$sfile"
                   exit 1
                 fi
               fi
-            done < <(find "$AUDIT_DIR/bin" "$AUDIT_DIR/libexec" -type f -print0)
+            done < <(find "${SCRIPT_DIRS[@]}" -type f -print0)
             echo "[PASS] Zero active references to /data/data/com.termux across all ELF binaries, shared libs, scripts, configs, dpkg DB, and SYMLINKS.txt"
 
             echo ""

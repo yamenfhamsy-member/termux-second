@@ -1,8 +1,43 @@
+diff --git a/packages/apt/apt-transport-tor.subpackage.sh b/packages/apt/apt-transport-tor.subpackage.sh
+index dfb5274..f2bb08c 100644
+--- a/packages/apt/apt-transport-tor.subpackage.sh
++++ b/packages/apt/apt-transport-tor.subpackage.sh
+@@ -6,5 +6,4 @@ share/apt-transport-tor/
+ "
+ 
+ TERMUX_SUBPKG_DESCRIPTION="APT transport for anonymous package downloads via Tor"
+-TERMUX_SUBPKG_DEPENDS="tor"
+ TERMUX_SUBPKG_PLATFORM_INDEPENDENT=true
 diff --git a/packages/apt/build.sh b/packages/apt/build.sh
-index d324992..2868765 100644
+index d324992..937d490 100644
 --- a/packages/apt/build.sh
 +++ b/packages/apt/build.sh
-@@ -72,12 +72,26 @@ termux_step_pre_configure() {
+@@ -8,7 +8,7 @@ TERMUX_PKG_SRCURL=https://salsa.debian.org/apt-team/apt/-/archive/${TERMUX_PKG_V
+ TERMUX_PKG_SHA256=13b4cf69639f1c1e5bdbc5b790d85c87e371a4054a51e2b512b670d3693329a0
+ # apt-key requires utilities from coreutils, findutils, gpgv, grep, sed.
+ TERMUX_PKG_DEPENDS="coreutils, dpkg, findutils, gpgv, grep, libandroid-glob, libbz2, libc++ (>= 30), libiconv, libgcrypt, libgnutls, liblz4, liblzma, sed, termux-keyring, termux-licenses, xxhash, zlib, zstd"
+-TERMUX_PKG_BUILD_DEPENDS="docbook-xsl,libdb"
++TERMUX_PKG_BUILD_DEPENDS="libdb"
+ TERMUX_PKG_CONFLICTS="apt-transport-https, libapt-pkg, unstable-repo, game-repo, science-repo"
+ TERMUX_PKG_REPLACES="apt-transport-https, libapt-pkg, unstable-repo, game-repo, science-repo"
+ TERMUX_PKG_PROVIDES="unstable-repo, game-repo, science-repo"
+@@ -28,7 +28,7 @@ TERMUX_PKG_EXTRA_CONFIGURE_ARGS="
+ -DDPKG_DATADIR=$TERMUX_PREFIX/share/dpkg
+ -DUSE_NLS=OFF
+ -DWITH_DOC=OFF
+--DWITH_DOC_MANPAGES=ON
++-DWITH_DOC_MANPAGES=OFF
+ "
+ 
+ # ubuntu uses instead $PREFIX/lib instead of $PREFIX/libexec to
+@@ -65,19 +65,29 @@ termux_step_pre_configure() {
+ 	CXXFLAGS+=" -Wno-c++11-narrowing"
+ 	# Fix glob() on Android 7.
+ 	LDFLAGS+=" -Wl,--no-as-needed -landroid-glob"
+-
+-	# for manpage build
+-	local docbook_xsl_version=$(. $TERMUX_SCRIPTDIR/packages/docbook-xsl/build.sh; echo $TERMUX_PKG_VERSION)
+-	TERMUX_PKG_EXTRA_CONFIGURE_ARGS+=" -DDOCBOOK_XSL=$TERMUX_PREFIX/share/xml/docbook/xsl-stylesheets-$docbook_xsl_version-nons"
  }
  
  termux_step_post_make_install() {
@@ -34,6 +69,17 @@ index d324992..2868765 100644
  
  	# apt-transport-tor
  	ln -sfr $TERMUX_PREFIX/lib/apt/methods/http $TERMUX_PREFIX/lib/apt/methods/tor
+diff --git a/packages/dpkg/dpkg-perl.subpackage.sh b/packages/dpkg/dpkg-perl.subpackage.sh
+index 609bff9..2e7ae8f 100644
+--- a/packages/dpkg/dpkg-perl.subpackage.sh
++++ b/packages/dpkg/dpkg-perl.subpackage.sh
+@@ -1,6 +1,5 @@
+ TERMUX_SUBPKG_DESCRIPTION="Perl modules for dpkg"
+ TERMUX_SUBPKG_INCLUDE="share/perl5"
+-TERMUX_SUBPKG_DEPENDS="perl, clang, make"
+ TERMUX_SUBPKG_PLATFORM_INDEPENDENT=true
+ 
+ termux_step_create_subpkg_debscripts() {
 diff --git a/packages/libsqlite/build.sh b/packages/libsqlite/build.sh
 index 1439e4e..42019ea 100644
 --- a/packages/libsqlite/build.sh
@@ -79,15 +125,16 @@ index 1439e4e..42019ea 100644
 -		-exec install -vDm600 "{}" "${TERMUX_PREFIX}/lib/sqlite3/pkgIndex.tcl" \;
  }
 diff --git a/packages/libsqlite/libsqlite-tcl.subpackage.sh b/packages/libsqlite/libsqlite-tcl.subpackage.sh
-deleted file mode 100644
-index 0815a88..0000000
+index 0815a88..01a8fe7 100644
 --- a/packages/libsqlite/libsqlite-tcl.subpackage.sh
-+++ /dev/null
-@@ -1,4 +0,0 @@
++++ b/packages/libsqlite/libsqlite-tcl.subpackage.sh
+@@ -1,4 +1,2 @@
 -TERMUX_SUBPKG_DESCRIPTION="tcl bindings for SQLite"
 -TERMUX_SUBPKG_DEPENDS="tcl"
 -TERMUX_SUBPKG_BREAKS="sqlcipher (<< 4.4.2-1), tcl (<< 8.6.10-4)"
 -TERMUX_SUBPKG_INCLUDE="lib/sqlite3/libtclsqlite3.so lib/sqlite3/pkgIndex.tcl"
++TERMUX_SUBPKG_INCLUDE="share/doc/libsqlite-tcl-disabled"
++TERMUX_SUBPKG_DESCRIPTION="Disabled tcl extension stub for standalone bootstrap build"
 diff --git a/packages/libsqlite/src-tclsqlite.patch b/packages/libsqlite/src-tclsqlite.patch
 deleted file mode 100644
 index 1c8f3fc..0000000
@@ -136,15 +183,16 @@ index 1107019..fe00aba 100644
  --with-libnghttp2=$TERMUX_PREFIX
  --with-libngtcp2=$TERMUX_PREFIX
 diff --git a/packages/libunbound/pyunbound.subpackage.sh b/packages/libunbound/pyunbound.subpackage.sh
-deleted file mode 100644
-index 48632aa..0000000
+index 48632aa..45c52d8 100644
 --- a/packages/libunbound/pyunbound.subpackage.sh
-+++ /dev/null
-@@ -1,4 +0,0 @@
++++ b/packages/libunbound/pyunbound.subpackage.sh
+@@ -1,4 +1,2 @@
 -TERMUX_SUBPKG_INCLUDE="lib/python*"
 -TERMUX_SUBPKG_DESCRIPTION="Python bindings for Unbound"
 -TERMUX_SUBPKG_DEPENDS="python"
 -TERMUX_SUBPKG_CONFLICTS="unbound (<< 1.15.0-1)"
++TERMUX_SUBPKG_INCLUDE="share/doc/pyunbound-disabled"
++TERMUX_SUBPKG_DESCRIPTION="Disabled pyunbound stub for standalone bootstrap build"
 diff --git a/packages/termux-tools/build.sh b/packages/termux-tools/build.sh
 index d455854..a7cbaf0 100644
 --- a/packages/termux-tools/build.sh
@@ -176,7 +224,7 @@ index d455854..a7cbaf0 100644
  
  termux_step_create_debscripts() {
 diff --git a/scripts/build-bootstraps.sh b/scripts/build-bootstraps.sh
-index 53bb59d..8ad77f6 100755
+index 53bb59d..e9dac1d 100755
 --- a/scripts/build-bootstraps.sh
 +++ b/scripts/build-bootstraps.sh
 @@ -29,7 +29,7 @@ BOOTSTRAP_ANDROID10_COMPATIBLE=false
@@ -188,7 +236,47 @@ index 53bb59d..8ad77f6 100755
  TERMUX_BUILT_DEBS_DIRECTORY="$TERMUX_PACKAGES_DIRECTORY/output"
  TERMUX_BUILT_PACKAGES_DIRECTORY="/data/data/.built-packages"
  
-@@ -116,7 +116,59 @@ extract_debs() {
+@@ -67,23 +67,34 @@ build_package() {
+ 	local package_name="$2"
+ 
+ 	local build_output
++	local resolved_pkg="$package_name"
++
++	# Resolve subpackage names (e.g. bzip2 -> libbz2, curl -> libcurl, xz-utils -> liblzma)
++	if [ ! -f "$TERMUX_PACKAGES_DIRECTORY/packages/$resolved_pkg/build.sh" ]; then
++		local subpkg_file
++		subpkg_file="$(find "$TERMUX_PACKAGES_DIRECTORY/packages" -mindepth 2 -maxdepth 2 -name "${resolved_pkg}.subpackage.sh" -print -quit 2>/dev/null || true)"
++		if [ -n "$subpkg_file" ]; then
++			resolved_pkg="$(basename "$(dirname "$subpkg_file")")"
++			echo "[*] Resolved subpackage '$package_name' to parent source package '$resolved_pkg'"
++		fi
++	fi
+ 
+ 	# Build package from source
+ 	# stderr will be redirected to stdout and both will be captured into variable and printed on screen
+ 	cd "$TERMUX_PACKAGES_DIRECTORY"
+-	echo $'\n\n\n'"[*] Building '$package_name'..."
++	echo $'\n\n\n'"[*] Building '$resolved_pkg' (requested: '$package_name')..."
+ 	exec 99>&1
+-	build_output="$("$TERMUX_PACKAGES_DIRECTORY"/build-package.sh "${BUILD_PACKAGE_OPTIONS[@]}" -a "$TERMUX_ARCH" "$package_name" 2>&1 | tee >(cat - >&99); exit ${PIPESTATUS[0]})";
++	build_output="$("$TERMUX_PACKAGES_DIRECTORY"/build-package.sh "${BUILD_PACKAGE_OPTIONS[@]}" -a "$TERMUX_ARCH" "$resolved_pkg" 2>&1 | tee >(cat - >&99); exit ${PIPESTATUS[0]})";
+ 	return_value=$?
+-	echo "[*] Building '$package_name' exited with exit code $return_value"
++	echo "[*] Building '$resolved_pkg' exited with exit code $return_value"
+ 	exec 99>&-
+ 	if [ $return_value -ne 0 ]; then
+-		echo "Failed to build package '$package_name' for arch '$TERMUX_ARCH'" 1>&2
++		echo "Failed to build package '$resolved_pkg' for arch '$TERMUX_ARCH'" 1>&2
+ 
+ 		# Dependency packages may not have a build.sh, so we ignore the error.
+ 		# A better way should be implemented to validate if its actually a dependency
+ 		# and not a required package itself, by removing dependencies from PACKAGES array.
+-		if [[ $IGNORE_BUILD_SCRIPT_NOT_FOUND_ERROR == "1" ]] && [[ "$build_output" == *"No build.sh script at package dir"* ]]; then
++		if [[ $IGNORE_BUILD_SCRIPT_NOT_FOUND_ERROR == "1" ]] && { [[ "$build_output" == *"No build.sh script at package dir"* ]] || [[ "$build_output" == *"No package "* ]]; }; then
+ 			echo "Ignoring error 'No build.sh script at package dir'" 1>&2
+ 			return 0
+ 		fi
+@@ -116,7 +127,59 @@ extract_debs() {
  		echo "\""
  	fi
  
@@ -249,7 +337,7 @@ index 53bb59d..8ad77f6 100755
  
  		current_package_name="$(echo "$deb" | sed -E 's/^([^_]+).*/\1/' )"
  		current_package_arch="$(echo "$deb" | sed -E 's/.*_(aarch64|all|arm|i686|x86_64).deb$/\1/' )"
-@@ -246,7 +298,8 @@ create_bootstrap_archive() {
+@@ -246,7 +309,8 @@ create_bootstrap_archive() {
  		zip -r9 "${BOOTSTRAP_TMPDIR}/bootstrap-${1}.zip" ./*
  	)
  
@@ -259,7 +347,7 @@ index 53bb59d..8ad77f6 100755
  
  	echo "[*] Finished successfully (${1})."
  
-@@ -436,6 +489,7 @@ main() {
+@@ -436,6 +500,7 @@ main() {
  			PACKAGES+=("proot")
  		fi
  		PACKAGES+=("coreutils")
@@ -267,7 +355,7 @@ index 53bb59d..8ad77f6 100755
  		PACKAGES+=("dash")
  		PACKAGES+=("diffutils")
  		PACKAGES+=("findutils")
-@@ -452,6 +506,7 @@ main() {
+@@ -452,6 +517,7 @@ main() {
  		PACKAGES+=("termux-keyring")
  		PACKAGES+=("termux-tools")
  		PACKAGES+=("util-linux")
@@ -275,7 +363,7 @@ index 53bb59d..8ad77f6 100755
  
  		# Additional.
  		PACKAGES+=("ed")
-@@ -483,7 +538,7 @@ main() {
+@@ -483,7 +549,7 @@ main() {
  		extract_debs "$TERMUX_ARCH" || return $?
  
  		# Add termux bootstrap second stage files
