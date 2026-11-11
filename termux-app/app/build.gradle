@@ -188,7 +188,7 @@ def verifyCustomBootstrap(String arch) {
         if (symlinksText.contains("/data/data/com.termux/")) {
             throw new GradleException("Contaminated SYMLINKS.txt referencing /data/data/com.termux/ in " + file.absolutePath)
         }
-        def stage2Entry = zipFile.getEntry("etc/termux/termux-bootstrap/termux-bootstrap-second-stage.sh")
+        def stage2Entry = zipFile.getEntry("etc/termux/termux-bootstrap/second-stage/termux-bootstrap-second-stage.sh")
         if (stage2Entry != null) {
             def stage2Text = zipFile.getInputStream(stage2Entry).getText("UTF-8")
             if (!stage2Text.contains("/data/data/com.yamen.termux.second/files/usr") || stage2Text.contains("/data/data/com.termux")) {

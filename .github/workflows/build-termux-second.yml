@@ -94,6 +94,12 @@ jobs:
           docker rm -f termux-second-builder >/dev/null 2>&1 || true
           ls -lh output/bootstrap-aarch64.zip
 
+      - name: Upload compiled custom bootstrap immediately (aarch64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-aarch64
+          path: termux-packages/output/bootstrap-aarch64.zip
+
       - name: Audit custom bootstrap prefix & ELF isolation (aarch64)
         working-directory: termux-packages
         run: |
@@ -114,7 +120,7 @@ jobs:
             echo "SHA256: $(sha256sum "$ZIP_PATH" | awk '{print $1}')"
             echo ""
             echo "--- Required Files Check ---"
-            for req in SYMLINKS.txt bin/bash bin/apt bin/dpkg bin/pkg bin/login etc/apt/sources.list etc/termux/termux-bootstrap/termux-bootstrap-second-stage.sh; do
+            for req in SYMLINKS.txt bin/bash bin/apt bin/dpkg bin/pkg bin/login etc/apt/sources.list etc/termux/termux-bootstrap/second-stage/termux-bootstrap-second-stage.sh; do
               if [ -e "$AUDIT_DIR/$req" ] || grep -qE "←\./${req}$" "$AUDIT_DIR/SYMLINKS.txt"; then
                 echo "[OK] $req"
               else
