@@ -69,11 +69,10 @@ android {
 
         splits {
             abi {
-                enable ((gradle.startParameter.taskNames.any { it.contains("Debug") } && splitAPKsForDebugBuilds == "1") ||
-                    (gradle.startParameter.taskNames.any { it.contains("Release") } && splitAPKsForReleaseBuilds == "1"))
+                enable true
                 reset ()
-                include 'x86', 'x86_64', 'armeabi-v7a', 'arm64-v8a'
-                universalApk true
+                include 'arm64-v8a'
+                universalApk false
             }
         }
     }
@@ -210,7 +209,7 @@ clean {
 
 task verifyCustomBootstraps() {
     doLast {
-        ["aarch64", "arm", "i686", "x86_64"].each { arch ->
+        ["aarch64"].each { arch ->
             verifyCustomBootstrap(arch)
         }
     }

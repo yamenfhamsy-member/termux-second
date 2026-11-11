@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64, arm, i686, x86_64]
+        arch: [aarch64]
 
     steps:
       - name: Reclaim unused runner disk space
@@ -194,9 +194,7 @@ jobs:
       - name: Stage custom bootstraps into termux-app native directory
         run: |
           mkdir -p termux-app/app/src/main/cpp
-          for arch in aarch64 arm i686 x86_64; do
-            cp -v "downloaded-bootstraps/bootstrap-${arch}.zip" "termux-app/app/src/main/cpp/bootstrap-${arch}.zip"
-          done
+          cp -v "downloaded-bootstraps/bootstrap-aarch64.zip" "termux-app/app/src/main/cpp/bootstrap-aarch64.zip"
           ls -lh termux-app/app/src/main/cpp/bootstrap-*.zip
 
       - name: Accept Android SDK licenses
@@ -252,10 +250,9 @@ jobs:
           APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
 
           {
-            echo "=== Termux Second APK Verification Report ==="
+            echo "=== Termux Second APK Verification Report (arm64-v8a) ==="
             for apk in "$OUT/apks/debug/termux-second_apt-android-7-debug_arm64-v8a.apk" \
-                       "$OUT/apks/release/termux-second_apt-android-7-release_arm64-v8a.apk" \
-                       "$OUT/apks/release/termux-second_apt-android-7-release_universal.apk"; do
+                       "$OUT/apks/release/termux-second_apt-android-7-release_arm64-v8a.apk"; do
               echo ""
               echo ">>> Inspecting: $(basename "$apk")"
               BADGING="$("$AAPT2" dump badging "$apk")"

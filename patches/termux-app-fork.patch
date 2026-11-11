@@ -1,5 +1,5 @@
 diff --git a/app/build.gradle b/app/build.gradle
-index 33c88d1..5527a2a 100644
+index 33c88d1..51cf663 100644
 --- a/app/build.gradle
 +++ b/app/build.gradle
 @@ -41,6 +41,7 @@ android {
@@ -33,7 +33,20 @@ index 33c88d1..5527a2a 100644
  
          externalNativeBuild {
              ndkBuild {
-@@ -78,11 +79,14 @@ android {
+@@ -68,21 +69,23 @@ android {
+ 
+         splits {
+             abi {
+-                enable ((gradle.startParameter.taskNames.any { it.contains("Debug") } && splitAPKsForDebugBuilds == "1") ||
+-                    (gradle.startParameter.taskNames.any { it.contains("Release") } && splitAPKsForReleaseBuilds == "1"))
++                enable true
+                 reset ()
+-                include 'x86', 'x86_64', 'armeabi-v7a', 'arm64-v8a'
+-                universalApk true
++                include 'arm64-v8a'
++                universalApk false
+             }
+         }
      }
  
      signingConfigs {
@@ -53,7 +66,7 @@ index 33c88d1..5527a2a 100644
          }
      }
  
-@@ -91,10 +95,15 @@ android {
+@@ -91,10 +94,15 @@ android {
              minifyEnabled true
              shrinkResources false // Reproducible builds
              proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
@@ -70,7 +83,7 @@ index 33c88d1..5527a2a 100644
          }
      }
  
-@@ -132,10 +141,10 @@ android {
+@@ -132,10 +140,10 @@ android {
          variant.outputs.all { output ->
              if (variant.buildType.name == "debug") {
                  def abi = output.getFilter(com.android.build.OutputFile.ABI)
@@ -83,7 +96,7 @@ index 33c88d1..5527a2a 100644
              }
          }
      }
-@@ -164,80 +173,51 @@ def validateVersionName(String versionName) {
+@@ -164,80 +172,51 @@ def validateVersionName(String versionName) {
          throw new GradleException("The versionName '"  + versionName + "' is not a valid version as per semantic version '2.0.0' spec in the format 'major.minor.patch(-prerelease)(+buildmetadata)'. https://semver.org/spec/v2.0.0.html.")
  }
  
@@ -179,7 +192,7 @@ index 33c88d1..5527a2a 100644
 -            downloadBootstrap("x86_64", "615b590679ee6cd885b7fd2ff9473c845e920f9b422f790bb158c63fe42b8481", version)
 -        } else {
 -            throw new GradleException("Unsupported TERMUX_PACKAGE_VARIANT \"" + packageVariant + "\"")
-+        ["aarch64", "arm", "i686", "x86_64"].each { arch ->
++        ["aarch64"].each { arch ->
 +            verifyCustomBootstrap(arch)
          }
      }
@@ -217,6 +230,13 @@ index 1d0dfe1..2826a41 100644
  
      <uses-feature
          android:name="android.hardware.touchscreen"
+diff --git a/app/src/main/cpp/Application.mk b/app/src/main/cpp/Application.mk
+new file mode 100644
+index 0000000..9ddd3c4
+--- /dev/null
++++ b/app/src/main/cpp/Application.mk
+@@ -0,0 +1 @@
++APP_ABI := arm64-v8a
 diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
 index cbd2992..b1ea717 100644
 --- a/app/src/main/res/values/strings.xml
@@ -283,6 +303,19 @@ diff --git a/app/testkey_untrusted.jks b/app/testkey_untrusted.jks
 deleted file mode 100644
 index 174cc95..0000000
 Binary files a/app/testkey_untrusted.jks and /dev/null differ
+diff --git a/terminal-emulator/build.gradle b/terminal-emulator/build.gradle
+index ff1ebae..31f74fb 100644
+--- a/terminal-emulator/build.gradle
++++ b/terminal-emulator/build.gradle
+@@ -18,7 +18,7 @@ android {
+         }
+ 
+         ndk {
+-            abiFilters 'x86', 'x86_64', 'armeabi-v7a', 'arm64-v8a'
++            abiFilters 'arm64-v8a'
+         }
+     }
+ 
 diff --git a/termux-shared/src/main/java/com/termux/shared/termux/TermuxConstants.java b/termux-shared/src/main/java/com/termux/shared/termux/TermuxConstants.java
 index 534936f..5a0cc99 100644
 --- a/termux-shared/src/main/java/com/termux/shared/termux/TermuxConstants.java
