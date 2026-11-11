@@ -1,0 +1,494 @@
+diff --git a/app/build.gradle b/app/build.gradle
+index 33c88d1..5527a2a 100644
+--- a/app/build.gradle
++++ b/app/build.gradle
+@@ -41,6 +41,7 @@ android {
+     }
+ 
+     defaultConfig {
++        applicationId "com.yamen.termux.second"
+         minSdkVersion project.properties.minSdkVersion.toInteger()
+         targetSdkVersion project.properties.targetSdkVersion.toInteger()
+         versionCode 118
+@@ -51,14 +52,14 @@ android {
+ 
+         buildConfigField "String", "TERMUX_PACKAGE_VARIANT", "\"" + project.ext.packageVariant + "\"" // Used by TermuxApplication class
+ 
+-        manifestPlaceholders.TERMUX_PACKAGE_NAME = "com.termux"
+-        manifestPlaceholders.TERMUX_APP_NAME = "Termux"
+-        manifestPlaceholders.TERMUX_API_APP_NAME = "Termux:API"
+-        manifestPlaceholders.TERMUX_BOOT_APP_NAME = "Termux:Boot"
+-        manifestPlaceholders.TERMUX_FLOAT_APP_NAME = "Termux:Float"
+-        manifestPlaceholders.TERMUX_STYLING_APP_NAME = "Termux:Styling"
+-        manifestPlaceholders.TERMUX_TASKER_APP_NAME = "Termux:Tasker"
+-        manifestPlaceholders.TERMUX_WIDGET_APP_NAME = "Termux:Widget"
++        manifestPlaceholders.TERMUX_PACKAGE_NAME = "com.yamen.termux.second"
++        manifestPlaceholders.TERMUX_APP_NAME = "Termux Second"
++        manifestPlaceholders.TERMUX_API_APP_NAME = "Termux Second:API"
++        manifestPlaceholders.TERMUX_BOOT_APP_NAME = "Termux Second:Boot"
++        manifestPlaceholders.TERMUX_FLOAT_APP_NAME = "Termux Second:Float"
++        manifestPlaceholders.TERMUX_STYLING_APP_NAME = "Termux Second:Styling"
++        manifestPlaceholders.TERMUX_TASKER_APP_NAME = "Termux Second:Tasker"
++        manifestPlaceholders.TERMUX_WIDGET_APP_NAME = "Termux Second:Widget"
+ 
+         externalNativeBuild {
+             ndkBuild {
+@@ -78,11 +79,14 @@ android {
+     }
+ 
+     signingConfigs {
+-        debug {
+-            storeFile file('testkey_untrusted.jks')
+-            keyAlias 'alias'
+-            storePassword 'xrj45yWGLbsO7W0v'
+-            keyPassword 'xrj45yWGLbsO7W0v'
++        customFork {
++            def ksFile = System.getenv("TERMUX_SECOND_KEYSTORE_FILE")
++            if (ksFile && new File(ksFile).exists()) {
++                storeFile file(ksFile)
++                storePassword System.getenv("TERMUX_SECOND_KEYSTORE_PASSWORD")
++                keyAlias System.getenv("TERMUX_SECOND_KEY_ALIAS")
++                keyPassword System.getenv("TERMUX_SECOND_KEY_PASSWORD")
++            }
+         }
+     }
+ 
+@@ -91,10 +95,15 @@ android {
+             minifyEnabled true
+             shrinkResources false // Reproducible builds
+             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
++            if (System.getenv("TERMUX_SECOND_KEYSTORE_FILE") && new File(System.getenv("TERMUX_SECOND_KEYSTORE_FILE")).exists()) {
++                signingConfig signingConfigs.customFork
++            }
+         }
+ 
+         debug {
+-            signingConfig signingConfigs.debug
++            if (System.getenv("TERMUX_SECOND_KEYSTORE_FILE") && new File(System.getenv("TERMUX_SECOND_KEYSTORE_FILE")).exists()) {
++                signingConfig signingConfigs.customFork
++            }
+         }
+     }
+ 
+@@ -132,10 +141,10 @@ android {
+         variant.outputs.all { output ->
+             if (variant.buildType.name == "debug") {
+                 def abi = output.getFilter(com.android.build.OutputFile.ABI)
+-                outputFileName = new File("termux-app_" + (apkVersionTag ? apkVersionTag : project.ext.packageVariant + "-" + "debug") + "_" + (abi ? abi : "universal") + ".apk")
++                outputFileName = new File("termux-second_" + (apkVersionTag ? apkVersionTag : project.ext.packageVariant + "-" + "debug") + "_" + (abi ? abi : "universal") + ".apk")
+             } else if (variant.buildType.name == "release") {
+                 def abi = output.getFilter(com.android.build.OutputFile.ABI)
+-                outputFileName = new File("termux-app_" + (apkVersionTag ? apkVersionTag : project.ext.packageVariant + "-" + "release") + "_" + (abi ? abi : "universal") + ".apk")
++                outputFileName = new File("termux-second_" + (apkVersionTag ? apkVersionTag : project.ext.packageVariant + "-" + "release") + "_" + (abi ? abi : "universal") + ".apk")
+             }
+         }
+     }
+@@ -164,80 +173,51 @@ def validateVersionName(String versionName) {
+         throw new GradleException("The versionName '"  + versionName + "' is not a valid version as per semantic version '2.0.0' spec in the format 'major.minor.patch(-prerelease)(+buildmetadata)'. https://semver.org/spec/v2.0.0.html.")
+ }
+ 
+-def downloadBootstrap(String arch, String expectedChecksum, String version) {
+-    def digest = java.security.MessageDigest.getInstance("SHA-256")
+-
++def verifyCustomBootstrap(String arch) {
+     def localUrl = "src/main/cpp/bootstrap-" + arch + ".zip"
+     def file = new File(projectDir, localUrl)
+-    if (file.exists()) {
+-        def buffer = new byte[8192]
+-        def input = new FileInputStream(file)
+-        while (true) {
+-            def readBytes = input.read(buffer)
+-            if (readBytes < 0) break
+-            digest.update(buffer, 0, readBytes)
++    if (!file.exists() || file.length() < 1024 * 1024) {
++        throw new GradleException("Custom fork bootstrap archive missing or invalid at " + file.absolutePath + ". Refusing to download upstream com.termux bootstrap.")
++    }
++    def zipFile = new java.util.zip.ZipFile(file)
++    try {
++        def symlinksEntry = zipFile.getEntry("SYMLINKS.txt")
++        if (symlinksEntry == null) {
++            throw new GradleException("SYMLINKS.txt missing in " + file.absolutePath)
+         }
+-        def checksum = new BigInteger(1, digest.digest()).toString(16)
+-        while (checksum.length() < 64) { checksum = "0" + checksum }
+-        if (checksum == expectedChecksum) {
+-            return
+-        } else {
+-            logger.quiet("Deleting old local file with wrong hash: " + localUrl + ": expected: " + expectedChecksum + ", actual: " + checksum)
+-            file.delete()
++        def symlinksText = zipFile.getInputStream(symlinksEntry).getText("UTF-8")
++        if (symlinksText.contains("/data/data/com.termux/")) {
++            throw new GradleException("Contaminated SYMLINKS.txt referencing /data/data/com.termux/ in " + file.absolutePath)
+         }
++        def stage2Entry = zipFile.getEntry("etc/termux/termux-bootstrap/termux-bootstrap-second-stage.sh")
++        if (stage2Entry != null) {
++            def stage2Text = zipFile.getInputStream(stage2Entry).getText("UTF-8")
++            if (!stage2Text.contains("/data/data/com.yamen.termux.second/files/usr") || stage2Text.contains("/data/data/com.termux")) {
++                throw new GradleException("Invalid prefix in termux-bootstrap-second-stage.sh inside " + file.absolutePath)
++            }
++        }
++    } finally {
++        zipFile.close()
+     }
+-
+-    def remoteUrl = "https://github.com/termux/termux-packages/releases/download/bootstrap-" + version + "/bootstrap-" + arch + ".zip"
+-    logger.quiet("Downloading " + remoteUrl + " ...")
+-
+-    file.parentFile.mkdirs()
+-    def out = new BufferedOutputStream(new FileOutputStream(file))
+-
+-    def connection = new URL(remoteUrl).openConnection()
+-    connection.setInstanceFollowRedirects(true)
+-    def digestStream = new java.security.DigestInputStream(connection.inputStream, digest)
+-    out << digestStream
+-    out.close()
+-
+-    def checksum = new BigInteger(1, digest.digest()).toString(16)
+-    while (checksum.length() < 64) { checksum = "0" + checksum }
+-    if (checksum != expectedChecksum) {
+-        file.delete()
+-        throw new GradleException("Wrong checksum for " + remoteUrl + ": expected: " + expectedChecksum + ", actual: " + checksum)
+-    }
++    logger.quiet("Verified custom com.yamen.termux.second bootstrap archive: " + localUrl + " (" + file.length() + " bytes)")
+ }
+ 
+ clean {
+     doLast {
+-        def tree = fileTree(new File(projectDir, 'src/main/cpp'))
+-        tree.include 'bootstrap-*.zip'
+-        tree.each { it.delete() }
++        // Preserve custom built bootstrap archives unless manually deleted
+     }
+ }
+ 
+-task downloadBootstraps() {
++task verifyCustomBootstraps() {
+     doLast {
+-        def packageVariant = project.ext.packageVariant
+-        if (packageVariant == "apt-android-7") {
+-            def version = "2026.02.12-r1" + "%2B" + "apt.android-7"
+-            downloadBootstrap("aarch64", "ea2aeba8819e517db711f8c32369e89e7c52cee73e07930ff91185e1ab93f4f3", version)
+-            downloadBootstrap("arm", "a38f4d3b2f735f83be2bf54eff463e86dc32a3e2f9f861c1557c4378d249c018", version)
+-            downloadBootstrap("i686", "f5bc0b025b9f3b420b5fcaeefc064f888f5f22a0d6fd7090f4aac0c33eb3555b", version)
+-            downloadBootstrap("x86_64", "b7fd0f2e3a4de534be3144f9f91acc768630fc463eaf134ab2e64c545e834f7a", version)
+-        } else if (packageVariant == "apt-android-5") {
+-            def version = "2022.04.28-r6" + "+" + packageVariant
+-            downloadBootstrap("aarch64", "913609d439415c828c5640be1b0561467e539cb1c7080662decaaca2fb4820e7", version)
+-            downloadBootstrap("arm", "26bfb45304c946170db69108e5eb6e3641aad751406ce106c80df80cad2eccf8", version)
+-            downloadBootstrap("i686", "46dcfeb5eef67ba765498db9fe4c50dc4690805139aa0dd141a9d8ee0693cd27", version)
+-            downloadBootstrap("x86_64", "615b590679ee6cd885b7fd2ff9473c845e920f9b422f790bb158c63fe42b8481", version)
+-        } else {
+-            throw new GradleException("Unsupported TERMUX_PACKAGE_VARIANT \"" + packageVariant + "\"")
++        ["aarch64", "arm", "i686", "x86_64"].each { arch ->
++            verifyCustomBootstrap(arch)
+         }
+     }
+ }
+ 
+ afterEvaluate {
+     android.applicationVariants.all { variant ->
+-        variant.javaCompileProvider.get().dependsOn(downloadBootstraps)
++        variant.javaCompileProvider.get().dependsOn(verifyCustomBootstraps)
+     }
+ }
+diff --git a/app/proguard-rules.pro b/app/proguard-rules.pro
+index 7365abb..ac2af35 100644
+--- a/app/proguard-rules.pro
++++ b/app/proguard-rules.pro
+@@ -8,5 +8,6 @@
+ #   http://developer.android.com/guide/developing/tools/proguard.html
+ 
+ -dontobfuscate
++-keep class com.termux.BuildConfig { *; }
+ #-renamesourcefileattribute SourceFile
+ #-keepattributes SourceFile,LineNumberTable
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 1d0dfe1..2826a41 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -1,9 +1,7 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+     xmlns:tools="http://schemas.android.com/tools"
+-    android:installLocation="internalOnly"
+-    android:sharedUserId="${TERMUX_PACKAGE_NAME}"
+-    android:sharedUserLabel="@string/shared_user_label">
++    android:installLocation="internalOnly">
+ 
+     <uses-feature
+         android:name="android.hardware.touchscreen"
+diff --git a/app/src/main/res/values/strings.xml b/app/src/main/res/values/strings.xml
+index cbd2992..b1ea717 100644
+--- a/app/src/main/res/values/strings.xml
++++ b/app/src/main/res/values/strings.xml
+@@ -1,14 +1,14 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ 
+ <!DOCTYPE resources [
+-    <!ENTITY TERMUX_PACKAGE_NAME "com.termux">
+-    <!ENTITY TERMUX_APP_NAME "Termux">
+-    <!ENTITY TERMUX_API_APP_NAME "Termux:API">
+-    <!ENTITY TERMUX_BOOT_APP_NAME "Termux:Boot">
+-    <!ENTITY TERMUX_FLOAT_APP_NAME "Termux:Float">
+-    <!ENTITY TERMUX_STYLING_APP_NAME "Termux:Styling">
+-    <!ENTITY TERMUX_TASKER_APP_NAME "Termux:Tasker">
+-    <!ENTITY TERMUX_WIDGET_APP_NAME "Termux:Widget">
++    <!ENTITY TERMUX_PACKAGE_NAME "com.yamen.termux.second">
++    <!ENTITY TERMUX_APP_NAME "Termux Second">
++    <!ENTITY TERMUX_API_APP_NAME "Termux Second:API">
++    <!ENTITY TERMUX_BOOT_APP_NAME "Termux Second:Boot">
++    <!ENTITY TERMUX_FLOAT_APP_NAME "Termux Second:Float">
++    <!ENTITY TERMUX_STYLING_APP_NAME "Termux Second:Styling">
++    <!ENTITY TERMUX_TASKER_APP_NAME "Termux Second:Tasker">
++    <!ENTITY TERMUX_WIDGET_APP_NAME "Termux Second:Widget">
+     ]>
+ 
+ <resources>
+diff --git a/app/src/main/res/xml/shortcuts.xml b/app/src/main/res/xml/shortcuts.xml
+index dcd8d34..b145ad5 100644
+--- a/app/src/main/res/xml/shortcuts.xml
++++ b/app/src/main/res/xml/shortcuts.xml
+@@ -18,7 +18,7 @@
+         tools:targetApi="n_mr1">
+         <intent
+             android:action="android.intent.action.RUN"
+-            android:targetPackage="com.termux"
++            android:targetPackage="com.yamen.termux.second"
+             android:targetClass="com.termux.app.TermuxActivity"
+             android:name="android.shortcut.conversation"/>
+     </shortcut>
+@@ -31,10 +31,10 @@
+         tools:targetApi="n_mr1">
+         <intent
+             android:action="android.intent.action.RUN"
+-            android:targetPackage="com.termux"
++            android:targetPackage="com.yamen.termux.second"
+             android:targetClass="com.termux.app.TermuxActivity"
+             android:name="android.shortcut.conversation">
+-            <extra android:name="com.termux.app.failsafe_session" android:value="true"/>
++            <extra android:name="com.yamen.termux.second.app.failsafe_session" android:value="true"/>
+         </intent>
+     </shortcut>
+ 
+@@ -46,7 +46,7 @@
+         tools:targetApi="n_mr1">
+         <intent
+             android:action="android.intent.action.VIEW"
+-            android:targetPackage="com.termux"
++            android:targetPackage="com.yamen.termux.second"
+             android:targetClass="com.termux.app.activities.SettingsActivity"
+             android:name="android.shortcut.conversation"/>
+     </shortcut>
+diff --git a/app/testkey_untrusted.jks b/app/testkey_untrusted.jks
+deleted file mode 100644
+index 174cc95..0000000
+Binary files a/app/testkey_untrusted.jks and /dev/null differ
+diff --git a/termux-shared/src/main/java/com/termux/shared/termux/TermuxConstants.java b/termux-shared/src/main/java/com/termux/shared/termux/TermuxConstants.java
+index 534936f..5a0cc99 100644
+--- a/termux-shared/src/main/java/com/termux/shared/termux/TermuxConstants.java
++++ b/termux-shared/src/main/java/com/termux/shared/termux/TermuxConstants.java
+@@ -347,9 +347,11 @@ public final class TermuxConstants {
+      */
+ 
+     /** Termux app name */
+-    public static final String TERMUX_APP_NAME = "Termux"; // Default: "Termux"
+-    /** Termux package name */
+-    public static final String TERMUX_PACKAGE_NAME = "com.termux"; // Default: "com.termux"
++    public static final String TERMUX_APP_NAME = "Termux Second"; // Fork app name (Upstream default: "Termux")
++    /** Termux package name (Android applicationId) */
++    public static final String TERMUX_PACKAGE_NAME = "com.yamen.termux.second"; // Fork applicationId (Upstream default: "com.termux")
++    /** Termux Java/Manifest namespace (kept separate from applicationId) */
++    public static final String TERMUX_APP_NAMESPACE = "com.termux";
+     /** Termux GitHub repo name */
+     public static final String TERMUX_GITHUB_REPO_NAME = "termux-app"; // Default: "termux-app"
+     /** Termux GitHub repo url */
+@@ -357,13 +359,13 @@ public final class TermuxConstants {
+     /** Termux GitHub issues repo url */
+     public static final String TERMUX_GITHUB_ISSUES_REPO_URL = TERMUX_GITHUB_REPO_URL + "/issues"; // Default: "https://github.com/termux/termux-app/issues"
+     /** Termux F-Droid package url */
+-    public static final String TERMUX_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_PACKAGE_NAME; // Default: "https://f-droid.org/en/packages/com.termux"
++    public static final String TERMUX_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_PACKAGE_NAME;
+ 
+ 
+     /** Termux:API app name */
+-    public static final String TERMUX_API_APP_NAME = "Termux:API"; // Default: "Termux:API"
++    public static final String TERMUX_API_APP_NAME = "Termux Second:API";
+     /** Termux:API app package name */
+-    public static final String TERMUX_API_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".api"; // Default: "com.termux.api"
++    public static final String TERMUX_API_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".api";
+     /** Termux:API GitHub repo name */
+     public static final String TERMUX_API_GITHUB_REPO_NAME = "termux-api"; // Default: "termux-api"
+     /** Termux:API GitHub repo url */
+@@ -371,13 +373,13 @@ public final class TermuxConstants {
+     /** Termux:API GitHub issues repo url */
+     public static final String TERMUX_API_GITHUB_ISSUES_REPO_URL = TERMUX_API_GITHUB_REPO_URL + "/issues"; // Default: "https://github.com/termux/termux-api/issues"
+     /** Termux:API F-Droid package url */
+-    public static final String TERMUX_API_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_API_PACKAGE_NAME; // Default: "https://f-droid.org/en/packages/com.termux.api"
++    public static final String TERMUX_API_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_API_PACKAGE_NAME;
+ 
+ 
+     /** Termux:Boot app name */
+-    public static final String TERMUX_BOOT_APP_NAME = "Termux:Boot"; // Default: "Termux:Boot"
++    public static final String TERMUX_BOOT_APP_NAME = "Termux Second:Boot";
+     /** Termux:Boot app package name */
+-    public static final String TERMUX_BOOT_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".boot"; // Default: "com.termux.boot"
++    public static final String TERMUX_BOOT_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".boot";
+     /** Termux:Boot GitHub repo name */
+     public static final String TERMUX_BOOT_GITHUB_REPO_NAME = "termux-boot"; // Default: "termux-boot"
+     /** Termux:Boot GitHub repo url */
+@@ -385,13 +387,13 @@ public final class TermuxConstants {
+     /** Termux:Boot GitHub issues repo url */
+     public static final String TERMUX_BOOT_GITHUB_ISSUES_REPO_URL = TERMUX_BOOT_GITHUB_REPO_URL + "/issues"; // Default: "https://github.com/termux/termux-boot/issues"
+     /** Termux:Boot F-Droid package url */
+-    public static final String TERMUX_BOOT_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_BOOT_PACKAGE_NAME; // Default: "https://f-droid.org/en/packages/com.termux.boot"
++    public static final String TERMUX_BOOT_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_BOOT_PACKAGE_NAME;
+ 
+ 
+     /** Termux:Float app name */
+-    public static final String TERMUX_FLOAT_APP_NAME = "Termux:Float"; // Default: "Termux:Float"
++    public static final String TERMUX_FLOAT_APP_NAME = "Termux Second:Float";
+     /** Termux:Float app package name */
+-    public static final String TERMUX_FLOAT_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".window"; // Default: "com.termux.window"
++    public static final String TERMUX_FLOAT_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".window";
+     /** Termux:Float GitHub repo name */
+     public static final String TERMUX_FLOAT_GITHUB_REPO_NAME = "termux-float"; // Default: "termux-float"
+     /** Termux:Float GitHub repo url */
+@@ -399,13 +401,13 @@ public final class TermuxConstants {
+     /** Termux:Float GitHub issues repo url */
+     public static final String TERMUX_FLOAT_GITHUB_ISSUES_REPO_URL = TERMUX_FLOAT_GITHUB_REPO_URL + "/issues"; // Default: "https://github.com/termux/termux-float/issues"
+     /** Termux:Float F-Droid package url */
+-    public static final String TERMUX_FLOAT_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_FLOAT_PACKAGE_NAME; // Default: "https://f-droid.org/en/packages/com.termux.window"
++    public static final String TERMUX_FLOAT_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_FLOAT_PACKAGE_NAME;
+ 
+ 
+     /** Termux:Styling app name */
+-    public static final String TERMUX_STYLING_APP_NAME = "Termux:Styling"; // Default: "Termux:Styling"
++    public static final String TERMUX_STYLING_APP_NAME = "Termux Second:Styling";
+     /** Termux:Styling app package name */
+-    public static final String TERMUX_STYLING_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".styling"; // Default: "com.termux.styling"
++    public static final String TERMUX_STYLING_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".styling";
+     /** Termux:Styling GitHub repo name */
+     public static final String TERMUX_STYLING_GITHUB_REPO_NAME = "termux-styling"; // Default: "termux-styling"
+     /** Termux:Styling GitHub repo url */
+@@ -413,13 +415,13 @@ public final class TermuxConstants {
+     /** Termux:Styling GitHub issues repo url */
+     public static final String TERMUX_STYLING_GITHUB_ISSUES_REPO_URL = TERMUX_STYLING_GITHUB_REPO_URL + "/issues"; // Default: "https://github.com/termux/termux-styling/issues"
+     /** Termux:Styling F-Droid package url */
+-    public static final String TERMUX_STYLING_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_STYLING_PACKAGE_NAME; // Default: "https://f-droid.org/en/packages/com.termux.styling"
++    public static final String TERMUX_STYLING_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_STYLING_PACKAGE_NAME;
+ 
+ 
+     /** Termux:Tasker app name */
+-    public static final String TERMUX_TASKER_APP_NAME = "Termux:Tasker"; // Default: "Termux:Tasker"
++    public static final String TERMUX_TASKER_APP_NAME = "Termux Second:Tasker";
+     /** Termux:Tasker app package name */
+-    public static final String TERMUX_TASKER_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".tasker"; // Default: "com.termux.tasker"
++    public static final String TERMUX_TASKER_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".tasker";
+     /** Termux:Tasker GitHub repo name */
+     public static final String TERMUX_TASKER_GITHUB_REPO_NAME = "termux-tasker"; // Default: "termux-tasker"
+     /** Termux:Tasker GitHub repo url */
+@@ -427,13 +429,13 @@ public final class TermuxConstants {
+     /** Termux:Tasker GitHub issues repo url */
+     public static final String TERMUX_TASKER_GITHUB_ISSUES_REPO_URL = TERMUX_TASKER_GITHUB_REPO_URL + "/issues"; // Default: "https://github.com/termux/termux-tasker/issues"
+     /** Termux:Tasker F-Droid package url */
+-    public static final String TERMUX_TASKER_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_TASKER_PACKAGE_NAME; // Default: "https://f-droid.org/en/packages/com.termux.tasker"
++    public static final String TERMUX_TASKER_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_TASKER_PACKAGE_NAME;
+ 
+ 
+     /** Termux:Widget app name */
+-    public static final String TERMUX_WIDGET_APP_NAME = "Termux:Widget"; // Default: "Termux:Widget"
++    public static final String TERMUX_WIDGET_APP_NAME = "Termux Second:Widget";
+     /** Termux:Widget app package name */
+-    public static final String TERMUX_WIDGET_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".widget"; // Default: "com.termux.widget"
++    public static final String TERMUX_WIDGET_PACKAGE_NAME = TERMUX_PACKAGE_NAME + ".widget";
+     /** Termux:Widget GitHub repo name */
+     public static final String TERMUX_WIDGET_GITHUB_REPO_NAME = "termux-widget"; // Default: "termux-widget"
+     /** Termux:Widget GitHub repo url */
+@@ -441,7 +443,7 @@ public final class TermuxConstants {
+     /** Termux:Widget GitHub issues repo url */
+     public static final String TERMUX_WIDGET_GITHUB_ISSUES_REPO_URL = TERMUX_WIDGET_GITHUB_REPO_URL + "/issues"; // Default: "https://github.com/termux/termux-widget/issues"
+     /** Termux:Widget F-Droid package url */
+-    public static final String TERMUX_WIDGET_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_WIDGET_PACKAGE_NAME; // Default: "https://f-droid.org/en/packages/com.termux.widget"
++    public static final String TERMUX_WIDGET_FDROID_PACKAGE_URL = FDROID_PACKAGES_BASE_URL + "/" + TERMUX_WIDGET_PACKAGE_NAME;
+ 
+ 
+ 
+@@ -924,18 +926,18 @@ public final class TermuxConstants {
+         public static final String TERMUX_AM_SOCKET_FILE_PATH = APPS_DIR_PATH + "/termux-am/am.sock"; // Default: "/data/data/com.termux/files/apps/com.termux/termux-am/am.sock"
+ 
+ 
+-        /** Termux app BuildConfig class name */
+-        public static final String BUILD_CONFIG_CLASS_NAME = TERMUX_PACKAGE_NAME + ".BuildConfig"; // Default: "com.termux.BuildConfig"
++        /** Termux app BuildConfig class name (uses Java namespace, not applicationId) */
++        public static final String BUILD_CONFIG_CLASS_NAME = TERMUX_APP_NAMESPACE + ".BuildConfig";
+ 
+         /** Termux app FileShareReceiverActivity class name */
+-        public static final String FILE_SHARE_RECEIVER_ACTIVITY_CLASS_NAME = TERMUX_PACKAGE_NAME + ".app.api.file.FileShareReceiverActivity"; // Default: "com.termux.app.api.file.FileShareReceiverActivity"
++        public static final String FILE_SHARE_RECEIVER_ACTIVITY_CLASS_NAME = TERMUX_APP_NAMESPACE + ".app.api.file.FileShareReceiverActivity";
+ 
+         /** Termux app FileViewReceiverActivity class name */
+-        public static final String FILE_VIEW_RECEIVER_ACTIVITY_CLASS_NAME = TERMUX_PACKAGE_NAME + ".app.api.file.FileViewReceiverActivity"; // Default: "com.termux.app.api.file.FileViewReceiverActivity"
++        public static final String FILE_VIEW_RECEIVER_ACTIVITY_CLASS_NAME = TERMUX_APP_NAMESPACE + ".app.api.file.FileViewReceiverActivity";
+ 
+ 
+         /** Termux app core activity name. */
+-        public static final String TERMUX_ACTIVITY_NAME = TERMUX_PACKAGE_NAME + ".app.TermuxActivity"; // Default: "com.termux.app.TermuxActivity"
++        public static final String TERMUX_ACTIVITY_NAME = TERMUX_APP_NAMESPACE + ".app.TermuxActivity";
+ 
+         /**
+          * Termux app core activity.
+@@ -969,14 +971,14 @@ public final class TermuxConstants {
+ 
+ 
+         /** Termux app settings activity name. */
+-        public static final String TERMUX_SETTINGS_ACTIVITY_NAME = TERMUX_PACKAGE_NAME + ".app.activities.SettingsActivity"; // Default: "com.termux.app.activities.SettingsActivity"
++        public static final String TERMUX_SETTINGS_ACTIVITY_NAME = TERMUX_APP_NAMESPACE + ".app.activities.SettingsActivity";
+ 
+ 
+ 
+ 
+ 
+         /** Termux app core service name. */
+-        public static final String TERMUX_SERVICE_NAME = TERMUX_PACKAGE_NAME + ".app.TermuxService"; // Default: "com.termux.app.TermuxService"
++        public static final String TERMUX_SERVICE_NAME = TERMUX_APP_NAMESPACE + ".app.TermuxService";
+ 
+         /**
+          * Termux app core service.
+@@ -1120,7 +1122,7 @@ public final class TermuxConstants {
+ 
+ 
+         /** Termux app run command service name. */
+-        public static final String RUN_COMMAND_SERVICE_NAME = TERMUX_PACKAGE_NAME + ".app.RunCommandService"; // Termux app service to receive commands from 3rd party apps "com.termux.app.RunCommandService"
++        public static final String RUN_COMMAND_SERVICE_NAME = TERMUX_APP_NAMESPACE + ".app.RunCommandService";
+ 
+         /**
+          * Termux app run command service to receive commands sent by 3rd party apps.
+diff --git a/termux-shared/src/main/res/values/strings.xml b/termux-shared/src/main/res/values/strings.xml
+index d585e24..a5e256c 100644
+--- a/termux-shared/src/main/res/values/strings.xml
++++ b/termux-shared/src/main/res/values/strings.xml
+@@ -1,15 +1,15 @@
+ <?xml version="1.0" encoding="utf-8"?>
+ 
+ <!DOCTYPE resources [
+-    <!ENTITY TERMUX_PACKAGE_NAME "com.termux">
+-    <!ENTITY TERMUX_APP_NAME "Termux">
+-    <!ENTITY TERMUX_API_APP_NAME "Termux:API">
+-    <!ENTITY TERMUX_BOOT_APP_NAME "Termux:Boot">
+-    <!ENTITY TERMUX_FLOAT_APP_NAME "Termux:Float">
+-    <!ENTITY TERMUX_STYLING_APP_NAME "Termux:Styling">
+-    <!ENTITY TERMUX_TASKER_APP_NAME "Termux:Tasker">
+-    <!ENTITY TERMUX_WIDGET_APP_NAME "Termux:Widget">
+-    <!ENTITY TERMUX_PREFIX_DIR_PATH "/data/data/com.termux/files/usr">
++    <!ENTITY TERMUX_PACKAGE_NAME "com.yamen.termux.second">
++    <!ENTITY TERMUX_APP_NAME "Termux Second">
++    <!ENTITY TERMUX_API_APP_NAME "Termux Second:API">
++    <!ENTITY TERMUX_BOOT_APP_NAME "Termux Second:Boot">
++    <!ENTITY TERMUX_FLOAT_APP_NAME "Termux Second:Float">
++    <!ENTITY TERMUX_STYLING_APP_NAME "Termux Second:Styling">
++    <!ENTITY TERMUX_TASKER_APP_NAME "Termux Second:Tasker">
++    <!ENTITY TERMUX_WIDGET_APP_NAME "Termux Second:Widget">
++    <!ENTITY TERMUX_PREFIX_DIR_PATH "/data/data/com.yamen.termux.second/files/usr">
+     ]>
+ 
+ <resources>

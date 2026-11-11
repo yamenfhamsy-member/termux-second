@@ -1,0 +1,292 @@
+name: Build Termux Second (Custom Bootstraps + APKs)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-bootstraps:
+    name: Bootstrap (${{ matrix.arch }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [aarch64, arm, i686, x86_64]
+
+    steps:
+      - name: Reclaim unused runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/android || true
+          df -h /
+
+      - name: Checkout fork repository
+        uses: actions/checkout@v4
+
+      - name: Prepare termux-packages at pinned upstream commit + apply fork patch
+        run: |
+          git init termux-packages
+          cd termux-packages
+          git remote add origin https://github.com/termux/termux-packages.git
+          git fetch --depth 1 origin b189a79f3b9606b108b45460a4c50756d91e2b9d
+          git checkout FETCH_HEAD
+          git apply "$GITHUB_WORKSPACE/patches/termux-packages-fork.patch"
+          mkdir -p output
+
+      - name: Start isolated Termux package-builder container
+        working-directory: termux-packages
+        run: |
+          docker pull ghcr.io/termux/package-builder:latest
+          docker run -d --init \
+            --name termux-second-builder \
+            --cap-add CAP_SYS_ADMIN \
+            --cap-add SYS_PTRACE \
+            --device /dev/fuse \
+            --security-opt seccomp=unconfined \
+            --security-opt apparmor=unconfined \
+            -v "$PWD:/home/builder/termux-packages" \
+            ghcr.io/termux/package-builder:latest \
+            sleep infinity
+
+          RUNNER_UID="$(id -u)"
+          RUNNER_GID="$(id -g)"
+          if [ "$RUNNER_UID" != "1001" ]; then
+            docker exec -u 0 termux-second-builder usermod -u "$RUNNER_UID" builder
+            docker exec -u 0 termux-second-builder groupmod -g "$RUNNER_GID" builder
+            docker exec -u 0 termux-second-builder chown -R "$RUNNER_UID:$RUNNER_GID" /home/builder /data
+          fi
+
+          docker exec -u 0 termux-second-builder bash -c '
+            mkdir -p /data/data/com.yamen.termux.second /data/data/.built-packages
+            chown -R builder:builder /data/data/com.yamen.termux.second /data/data/.built-packages
+            ln -sfn /data/data/com.yamen.termux.second/aosp /system
+            sysctl -w kernel.pid_max=65535 || echo 65535 > /proc/sys/kernel/pid_max || true
+          '
+
+      - name: Compile custom bootstrap from source (${{ matrix.arch }})
+        working-directory: termux-packages
+        run: |
+          docker exec -e CI=true -u builder -w /home/builder/termux-packages termux-second-builder \
+            bash -o pipefail -c "./scripts/build-bootstraps.sh --architectures ${{ matrix.arch }} 2>&1 | tee output/bootstrap-${{ matrix.arch }}-build.log"
+
+      - name: Audit custom bootstrap prefix & ELF isolation (${{ matrix.arch }})
+        working-directory: termux-packages
+        run: |
+          set -euo pipefail
+          ZIP_PATH="output/bootstrap-${{ matrix.arch }}.zip"
+          AUDIT_REPORT="output/bootstrap-${{ matrix.arch }}-audit.txt"
+          test -f "$ZIP_PATH"
+
+          AUDIT_DIR="/tmp/audit-${{ matrix.arch }}"
+          rm -rf "$AUDIT_DIR"
+          mkdir -p "$AUDIT_DIR"
+          unzip -q "$ZIP_PATH" -d "$AUDIT_DIR"
+
+          {
+            echo "=== Termux Second Custom Bootstrap Audit (${{ matrix.arch }}) ==="
+            echo "Archive: $ZIP_PATH"
+            echo "Size: $(stat -c%s "$ZIP_PATH") bytes"
+            echo "SHA256: $(sha256sum "$ZIP_PATH" | awk '{print $1}')"
+            echo ""
+            echo "--- Required Files Check ---"
+            for req in SYMLINKS.txt bin/bash bin/apt bin/dpkg bin/pkg bin/login etc/apt/sources.list etc/termux/termux-bootstrap/termux-bootstrap-second-stage.sh; do
+              if [ -e "$AUDIT_DIR/$req" ] || grep -qE "←\./${req}$" "$AUDIT_DIR/SYMLINKS.txt"; then
+                echo "[OK] $req"
+              else
+                echo "[FAIL] Missing $req"
+                exit 1
+              fi
+            done
+
+            echo ""
+            echo "--- ELF DT_RUNPATH & Binary Strings Verification ---"
+            ELF_COUNT=0
+            while IFS= read -r -d '' f; do
+              if [ "$(head -c 4 "$f" 2>/dev/null | wc -c)" -eq 4 ] && head -c 4 "$f" | grep -q $'\x7fELF'; then
+                ELF_COUNT=$((ELF_COUNT + 1))
+                if readelf -d "$f" 2>/dev/null | grep -E 'RUNPATH|RPATH' | grep -q "/data/data/com.termux"; then
+                  echo "[FAIL] Original prefix in DT_RUNPATH of $f"
+                  exit 1
+                fi
+                if strings "$f" | grep -q "/data/data/com.termux"; then
+                  echo "[FAIL] Original prefix string found in ELF binary $f"
+                  strings "$f" | grep "/data/data/com.termux"
+                  exit 1
+                fi
+              fi
+            done < <(find "$AUDIT_DIR" -type f -print0)
+            echo "[PASS] Audited $ELF_COUNT ELF binaries & shared libraries: ZERO references to /data/data/com.termux"
+
+            for bin in bin/bash bin/apt bin/dpkg bin/curl; do
+              if [ -f "$AUDIT_DIR/$bin" ]; then
+                runpath="$(readelf -d "$AUDIT_DIR/$bin" | grep -E 'RUNPATH|RPATH' || true)"
+                echo "  $bin -> $runpath"
+                echo "$runpath" | grep -q "/data/data/com.yamen.termux.second/files/usr/lib"
+              fi
+            done
+
+            echo ""
+            echo "--- Zero Contamination Scan across Scripts, Shebangs, Configs & SYMLINKS.txt ---"
+            if grep -rn "/data/data/com.termux" \
+              "$AUDIT_DIR/etc" \
+              "$AUDIT_DIR/var" \
+              "$AUDIT_DIR/SYMLINKS.txt" > /tmp/contamination.txt 2>&1; then
+              echo "[FAIL] Found /data/data/com.termux contamination in etc/var/SYMLINKS.txt:"
+              cat /tmp/contamination.txt
+              exit 1
+            fi
+            while IFS= read -r -d '' sfile; do
+              if ! head -c 4 "$sfile" 2>/dev/null | grep -q $'\x7fELF'; then
+                if grep -v '^[[:space:]]*#' "$sfile" 2>/dev/null | grep -q "/data/data/com.termux"; then
+                  echo "[FAIL] Active /data/data/com.termux reference in script $sfile:"
+                  grep -n "/data/data/com.termux" "$sfile"
+                  exit 1
+                fi
+              fi
+            done < <(find "$AUDIT_DIR/bin" "$AUDIT_DIR/libexec" -type f -print0)
+            echo "[PASS] Zero active references to /data/data/com.termux across all ELF binaries, shared libs, scripts, configs, dpkg DB, and SYMLINKS.txt"
+
+            echo ""
+            echo "--- Positive Custom Prefix Scan (/data/data/com.yamen.termux.second/files/usr) ---"
+            MATCH_COUNT="$(grep -rIl "/data/data/com.yamen.termux.second/files/usr" "$AUDIT_DIR/bin" "$AUDIT_DIR/etc" "$AUDIT_DIR/var" | wc -l)"
+            echo "[PASS] Custom prefix verified across $MATCH_COUNT text/config/script files + ELF binaries"
+          } | tee "$AUDIT_REPORT"
+
+      - name: Upload custom bootstrap (${{ matrix.arch }})
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-${{ matrix.arch }}
+          path: |
+            termux-packages/output/bootstrap-${{ matrix.arch }}.zip
+            termux-packages/output/bootstrap-${{ matrix.arch }}-audit.txt
+            termux-packages/output/bootstrap-${{ matrix.arch }}-build.log
+
+  build-apks:
+    name: Build & Verify Termux Second APKs
+    needs: build-bootstraps
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout fork repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Download all custom bootstrap archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bootstrap-*
+          path: downloaded-bootstraps
+          merge-multiple: true
+
+      - name: Stage custom bootstraps into termux-app native directory
+        run: |
+          mkdir -p termux-app/app/src/main/cpp
+          for arch in aarch64 arm i686 x86_64; do
+            cp -v "downloaded-bootstraps/bootstrap-${arch}.zip" "termux-app/app/src/main/cpp/bootstrap-${arch}.zip"
+          done
+          ls -lh termux-app/app/src/main/cpp/bootstrap-*.zip
+
+      - name: Accept Android SDK licenses
+        run: |
+          SDKMGR="$(find "$ANDROID_HOME" -name sdkmanager -type f | head -n 1)"
+          yes | "$SDKMGR" --sdk_root="$ANDROID_HOME" --licenses > /dev/null
+
+      - name: Build Debug & Release APKs with isolated ephemeral signing key
+        working-directory: termux-app
+        run: |
+          set -euo pipefail
+          EPHEMERAL_KS="/tmp/termux-second-ephemeral-$(openssl rand -hex 8).jks"
+          EPHEMERAL_PASS="$(openssl rand -hex 20)"
+          EPHEMERAL_ALIAS="termux_second_ephemeral"
+
+          trap 'rm -f "$EPHEMERAL_KS"' EXIT
+
+          keytool -genkeypair -v \
+            -keystore "$EPHEMERAL_KS" \
+            -storetype PKCS12 \
+            -alias "$EPHEMERAL_ALIAS" \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass "$EPHEMERAL_PASS" \
+            -keypass "$EPHEMERAL_PASS" \
+            -dname "CN=Termux Second Fork, OU=Independent Sandbox, O=Yamen, C=NL"
+
+          export TERMUX_SECOND_KEYSTORE_FILE="$EPHEMERAL_KS"
+          export TERMUX_SECOND_KEYSTORE_PASSWORD="$EPHEMERAL_PASS"
+          export TERMUX_SECOND_KEY_ALIAS="$EPHEMERAL_ALIAS"
+          export TERMUX_SECOND_KEY_PASSWORD="$EPHEMERAL_PASS"
+          export TERMUX_SPLIT_APKS_FOR_DEBUG_BUILDS="1"
+          export TERMUX_SPLIT_APKS_FOR_RELEASE_BUILDS="1"
+          export TERMUX_PACKAGE_VARIANT="apt-android-7"
+
+          chmod +x ./gradlew
+          ./gradlew --no-daemon assembleDebug assembleRelease
+
+          rm -f "$EPHEMERAL_KS"
+
+      - name: Collect artifacts & run APK coexistence / manifest / signature verification
+        run: |
+          set -euo pipefail
+          OUT="$GITHUB_WORKSPACE/final-output"
+          mkdir -p "$OUT/apks/debug" "$OUT/apks/release" "$OUT/bootstraps" "$OUT/logs"
+
+          cp -v termux-app/app/build/outputs/apk/debug/*.apk "$OUT/apks/debug/"
+          cp -v termux-app/app/build/outputs/apk/release/*.apk "$OUT/apks/release/"
+          cp -v downloaded-bootstraps/bootstrap-*.zip "$OUT/bootstraps/"
+          cp -v downloaded-bootstraps/bootstrap-*-audit.txt "$OUT/logs/"
+          cp -v downloaded-bootstraps/bootstrap-*-build.log "$OUT/logs/" || true
+
+          AAPT2="$(find "$ANDROID_HOME/build-tools" -name aapt2 -type f | sort -V | tail -n 1)"
+          APKSIGNER="$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)"
+
+          {
+            echo "=== Termux Second APK Verification Report ==="
+            for apk in "$OUT/apks/debug/termux-second_apt-android-7-debug_arm64-v8a.apk" \
+                       "$OUT/apks/release/termux-second_apt-android-7-release_arm64-v8a.apk" \
+                       "$OUT/apks/release/termux-second_apt-android-7-release_universal.apk"; do
+              echo ""
+              echo ">>> Inspecting: $(basename "$apk")"
+              BADGING="$("$AAPT2" dump badging "$apk")"
+              echo "$BADGING" | grep -E "^(package:|sdkVersion:|targetSdkVersion:|application-label:|launchable-activity:|native-code:)"
+              echo "$BADGING" | grep -q "name='com.yamen.termux.second'"
+              echo "$BADGING" | grep -q "application-label:'Termux Second'"
+
+              XMLTREE="$("$AAPT2" dump xmltree "$apk" --file AndroidManifest.xml)"
+              if echo "$XMLTREE" | grep -qi "sharedUserId"; then
+                echo "[FAIL] sharedUserId still present in merged AndroidManifest.xml!"
+                exit 1
+              else
+                echo "[PASS] No sharedUserId in merged AndroidManifest.xml (isolated dedicated UID)"
+              fi
+
+              if echo "$XMLTREE" | grep -q '"com.termux"'; then
+                echo "[FAIL] Bare com.termux package/authority/permission found in manifest!"
+                exit 1
+              fi
+
+              echo "--- Authorities & Permissions ---"
+              echo "$XMLTREE" | grep -E "com\.yamen\.termux\.second" | head -n 20
+
+              echo "--- APK Signature Verification ---"
+              "$APKSIGNER" verify --verbose --print-certs "$apk" | head -n 15
+            done
+          } | tee "$OUT/apk-verification-report.txt"
+
+          (cd "$OUT" && find apks bootstraps logs apk-verification-report.txt -type f -exec sha256sum {} + | sort -k2 > SHA256SUMS.txt)
+          cat "$OUT/SHA256SUMS.txt"
+
+      - name: Upload complete Termux Second build deliverables
+        uses: actions/upload-artifact@v4
+        with:
+          name: termux-second-complete-output
+          path: final-output/

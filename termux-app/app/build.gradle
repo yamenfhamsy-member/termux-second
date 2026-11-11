@@ -1,0 +1,223 @@
+plugins {
+    id "com.android.application"
+}
+
+ext {
+    // The packageVariant defines the bootstrap variant that will be included in the app APK.
+    // This must be supported by com.termux.shared.termux.TermuxBootstrap.PackageVariant or app will
+    // crash at startup.
+    // Bootstrap of a different variant must not be manually installed by the user after app installation
+    // by replacing $PREFIX since app code is dependant on the variant used to build the APK.
+    // Currently supported values are: [ "apt-android-7" "apt-android-5" ]
+    packageVariant = System.getenv("TERMUX_PACKAGE_VARIANT") ?: "apt-android-7" // Default: "apt-android-7"
+}
+
+android {
+    namespace "com.termux"
+
+    compileSdkVersion project.properties.compileSdkVersion.toInteger()
+    ndkVersion = System.getenv("JITPACK_NDK_VERSION") ?: project.properties.ndkVersion
+    def appVersionName = System.getenv("TERMUX_APP_VERSION_NAME") ?: ""
+    def apkVersionTag = System.getenv("TERMUX_APK_VERSION_TAG") ?: ""
+    def splitAPKsForDebugBuilds = System.getenv("TERMUX_SPLIT_APKS_FOR_DEBUG_BUILDS") ?: "1"
+    def splitAPKsForReleaseBuilds = System.getenv("TERMUX_SPLIT_APKS_FOR_RELEASE_BUILDS") ?: "0" // F-Droid does not support split APKs #1904
+
+    dependencies {
+        implementation "androidx.annotation:annotation:1.9.0"
+        implementation "androidx.core:core:1.13.1"
+        implementation "androidx.drawerlayout:drawerlayout:1.2.0"
+        implementation "androidx.preference:preference:1.2.1"
+        implementation "androidx.viewpager:viewpager:1.0.0"
+        implementation "com.google.android.material:material:1.12.0"
+        implementation "com.google.guava:guava:24.1-jre"
+        implementation "io.noties.markwon:core:$markwonVersion"
+        implementation "io.noties.markwon:ext-strikethrough:$markwonVersion"
+        implementation "io.noties.markwon:linkify:$markwonVersion"
+        implementation "io.noties.markwon:recycler:$markwonVersion"
+        implementation 'com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava'
+
+        implementation project(":terminal-view")
+        implementation project(":termux-shared")
+    }
+
+    defaultConfig {
+        applicationId "com.yamen.termux.second"
+        minSdkVersion project.properties.minSdkVersion.toInteger()
+        targetSdkVersion project.properties.targetSdkVersion.toInteger()
+        versionCode 118
+        versionName "0.118.0"
+
+        if (appVersionName) versionName = appVersionName
+        validateVersionName(versionName)
+
+        buildConfigField "String", "TERMUX_PACKAGE_VARIANT", "\"" + project.ext.packageVariant + "\"" // Used by TermuxApplication class
+
+        manifestPlaceholders.TERMUX_PACKAGE_NAME = "com.yamen.termux.second"
+        manifestPlaceholders.TERMUX_APP_NAME = "Termux Second"
+        manifestPlaceholders.TERMUX_API_APP_NAME = "Termux Second:API"
+        manifestPlaceholders.TERMUX_BOOT_APP_NAME = "Termux Second:Boot"
+        manifestPlaceholders.TERMUX_FLOAT_APP_NAME = "Termux Second:Float"
+        manifestPlaceholders.TERMUX_STYLING_APP_NAME = "Termux Second:Styling"
+        manifestPlaceholders.TERMUX_TASKER_APP_NAME = "Termux Second:Tasker"
+        manifestPlaceholders.TERMUX_WIDGET_APP_NAME = "Termux Second:Widget"
+
+        externalNativeBuild {
+            ndkBuild {
+                cFlags "-std=c11", "-Wall", "-Wextra", "-Werror", "-Os", "-fno-stack-protector", "-Wl,--gc-sections"
+            }
+        }
+
+        splits {
+            abi {
+                enable ((gradle.startParameter.taskNames.any { it.contains("Debug") } && splitAPKsForDebugBuilds == "1") ||
+                    (gradle.startParameter.taskNames.any { it.contains("Release") } && splitAPKsForReleaseBuilds == "1"))
+                reset ()
+                include 'x86', 'x86_64', 'armeabi-v7a', 'arm64-v8a'
+                universalApk true
+            }
+        }
+    }
+
+    signingConfigs {
+        customFork {
+            def ksFile = System.getenv("TERMUX_SECOND_KEYSTORE_FILE")
+            if (ksFile && new File(ksFile).exists()) {
+                storeFile file(ksFile)
+                storePassword System.getenv("TERMUX_SECOND_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("TERMUX_SECOND_KEY_ALIAS")
+                keyPassword System.getenv("TERMUX_SECOND_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled true
+            shrinkResources false // Reproducible builds
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (System.getenv("TERMUX_SECOND_KEYSTORE_FILE") && new File(System.getenv("TERMUX_SECOND_KEYSTORE_FILE")).exists()) {
+                signingConfig signingConfigs.customFork
+            }
+        }
+
+        debug {
+            if (System.getenv("TERMUX_SECOND_KEYSTORE_FILE") && new File(System.getenv("TERMUX_SECOND_KEYSTORE_FILE")).exists()) {
+                signingConfig signingConfigs.customFork
+            }
+        }
+    }
+
+    compileOptions {
+        // Flag to enable support for the new language APIs
+        coreLibraryDesugaringEnabled true
+
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    externalNativeBuild {
+        ndkBuild {
+            path "src/main/cpp/Android.mk"
+        }
+    }
+
+    lint {
+        disable 'ProtectedPermissions'
+    }
+
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true
+        }
+    }
+
+    applicationVariants.all { variant ->
+        variant.outputs.all { output ->
+            if (variant.buildType.name == "debug") {
+                def abi = output.getFilter(com.android.build.OutputFile.ABI)
+                outputFileName = new File("termux-second_" + (apkVersionTag ? apkVersionTag : project.ext.packageVariant + "-" + "debug") + "_" + (abi ? abi : "universal") + ".apk")
+            } else if (variant.buildType.name == "release") {
+                def abi = output.getFilter(com.android.build.OutputFile.ABI)
+                outputFileName = new File("termux-second_" + (apkVersionTag ? apkVersionTag : project.ext.packageVariant + "-" + "release") + "_" + (abi ? abi : "universal") + ".apk")
+            }
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
+    testImplementation "org.robolectric:robolectric:4.10"
+    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:1.1.5"
+}
+
+task versionName {
+    doLast {
+        print android.defaultConfig.versionName
+    }
+}
+
+def validateVersionName(String versionName) {
+    // https://semver.org/spec/v2.0.0.html#is-there-a-suggested-regular-expression-regex-to-check-a-semver-string
+    // ^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$
+    if (!java.util.regex.Pattern.matches("^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?\$", versionName))
+        throw new GradleException("The versionName '"  + versionName + "' is not a valid version as per semantic version '2.0.0' spec in the format 'major.minor.patch(-prerelease)(+buildmetadata)'. https://semver.org/spec/v2.0.0.html.")
+}
+
+def verifyCustomBootstrap(String arch) {
+    def localUrl = "src/main/cpp/bootstrap-" + arch + ".zip"
+    def file = new File(projectDir, localUrl)
+    if (!file.exists() || file.length() < 1024 * 1024) {
+        throw new GradleException("Custom fork bootstrap archive missing or invalid at " + file.absolutePath + ". Refusing to download upstream com.termux bootstrap.")
+    }
+    def zipFile = new java.util.zip.ZipFile(file)
+    try {
+        def symlinksEntry = zipFile.getEntry("SYMLINKS.txt")
+        if (symlinksEntry == null) {
+            throw new GradleException("SYMLINKS.txt missing in " + file.absolutePath)
+        }
+        def symlinksText = zipFile.getInputStream(symlinksEntry).getText("UTF-8")
+        if (symlinksText.contains("/data/data/com.termux/")) {
+            throw new GradleException("Contaminated SYMLINKS.txt referencing /data/data/com.termux/ in " + file.absolutePath)
+        }
+        def stage2Entry = zipFile.getEntry("etc/termux/termux-bootstrap/termux-bootstrap-second-stage.sh")
+        if (stage2Entry != null) {
+            def stage2Text = zipFile.getInputStream(stage2Entry).getText("UTF-8")
+            if (!stage2Text.contains("/data/data/com.yamen.termux.second/files/usr") || stage2Text.contains("/data/data/com.termux")) {
+                throw new GradleException("Invalid prefix in termux-bootstrap-second-stage.sh inside " + file.absolutePath)
+            }
+        }
+    } finally {
+        zipFile.close()
+    }
+    logger.quiet("Verified custom com.yamen.termux.second bootstrap archive: " + localUrl + " (" + file.length() + " bytes)")
+}
+
+clean {
+    doLast {
+        // Preserve custom built bootstrap archives unless manually deleted
+    }
+}
+
+task verifyCustomBootstraps() {
+    doLast {
+        ["aarch64", "arm", "i686", "x86_64"].each { arch ->
+            verifyCustomBootstrap(arch)
+        }
+    }
+}
+
+afterEvaluate {
+    android.applicationVariants.all { variant ->
+        variant.javaCompileProvider.get().dependsOn(verifyCustomBootstraps)
+    }
+}
